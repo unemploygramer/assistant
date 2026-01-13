@@ -1,0 +1,17 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3b2be9d99354fae4c93fd39d77a1fe2e, type: 3}
+  m_Name: AIKeys
+  m_EditorClassIdentifier: 
+  openRouterKey: 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
+  elevenLabsKey: sk_303472cf4d33cb56909a26fb3e90fac1fc4c20d239838354
+  voiceId: gllMMawbYGTja23oQ3Vu
