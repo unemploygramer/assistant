@@ -5,17 +5,32 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "phone": "node receptionist/phone_server.js",
+    "phone:dev": "concurrently \"node receptionist/phone_server.js\" \"ngrok http 3001\" --names \"SERVER,NGROK\" --prefix-colors \"blue,green\"",
+    "phone:static": "concurrently \"node receptionist/phone_server.js\" \"ngrok http --domain=seismographical-herminia-indexless.ngrok-free.dev 3001\" --names \"SERVER,NGROK\" --prefix-colors \"blue,green\"",
+    "phone:start": "powershell -ExecutionPolicy Bypass -File receptionist/start-phone.ps1",
+    "phone:cloudflare": "powershell -ExecutionPolicy Bypass -File receptionist/start-cloudflare.ps1"
   },
-  "keywords": ["ai", "unity", "openrouter", "elevenlabs"],
+  "keywords": [
+    "ai",
+    "unity",
+    "openrouter",
+    "elevenlabs"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
+    "@supabase/supabase-js": "^2.39.0",
     "axios": "^1.6.0",
-    "dotenv": "^16.3.1",
-    "googleapis": "^140.0.0"
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.18.2",
+    "googleapis": "^140.0.0",
+    "nodemailer": "^8.0.1",
+    "openai": "^6.16.0",
+    "twilio": "^5.11.2",
+    "ws": "^8.19.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

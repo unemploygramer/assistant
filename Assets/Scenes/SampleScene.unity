@@ -678,7 +678,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 58421584fea276d4e99d61b3193bd755, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  bodyRenderer: {fileID: 990630709}
+  faceMesh: {fileID: 0}
+  maxValue: 50
+  smoothDuration: 0.2
 --- !u!1 &1033193362 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: -4674364713418368537, guid: 512078b6c57326e4f866d33845175f6b, type: 3}
@@ -1364,7 +1366,7 @@ MonoBehaviour:
   jawClosed: {x: -57, y: 100, z: 80}
   faceMesh: {fileID: 990630709}
   jawBlendShape: jawOpen
-  sensitivity: 20
+  sensitivity: 1000
   noiseGate: 0.02
   smoothness: 10
 --- !u!4 &1485745405

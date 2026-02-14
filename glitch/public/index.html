@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Glitch Remote</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #0d0d0d; color: #00ffff; display: flex; flex-direction: column; height: 100vh; margin: 0; overflow: hidden; }
+        #chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; scroll-behavior: smooth; border-bottom: 1px solid #333; padding-bottom: 40px; }
+        .message { max-width: 80%; padding: 12px 18px; border-radius: 15px; font-size: 16px; line-height: 1.4; animation: fadeIn 0.3s ease; }
+        .user-msg { align-self: flex-end; background: #004444; color: #fff; border-bottom-right-radius: 2px; border: 1px solid #00ffff; }
+        .ai-msg { align-self: flex-start; background: #222; color: #ddd; border-bottom-left-radius: 2px; border: 1px solid #555; }
+        .system-msg { align-self: center; font-size: 12px; color: #666; font-style: italic; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        #controls { height: 240px; background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px; box-shadow: 0 -5px 20px rgba(0,0,0,0.5); position: relative; }
+        .switch-container { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; font-weight: bold; color: #888; }
+        .switch-container.active { color: #00ff00; text-shadow: 0 0 10px rgba(0,255,0,0.5); }
+        .switch { position: relative; display: inline-block; width: 50px; height: 24px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #333; transition: .4s; border-radius: 34px; border: 1px solid #555; }
+        .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 4px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: #004400; border-color: #00ff00; }
+        input:checked + .slider:before { transform: translateX(26px); background-color: #00ff00; }
+        #micBtn { width: 90px; height: 90px; border-radius: 50%; background: #1a1a1a; border: 3px solid #00ffff; color: #00ffff; font-size: 36px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s ease; box-shadow: 0 0 15px rgba(0, 255, 255, 0.1); }
+        #micBtn:active { transform: scale(0.95); }
+        #micBtn.listening { background: #00ff00; border-color: #00ff00; color: #000; box-shadow: 0 0 30px rgba(0, 255, 0, 0.4); animation: pulse 1.5s infinite; }
+        #micBtn.live { background: #ff0000; border-color: #ff0000; color: #fff; box-shadow: 0 0 30px rgba(255, 0, 0, 0.4); animation: pulse 1.5s infinite; }
+        #micBtn.processing { background: #ffff00; border-color: #ffff00; color: #000; animation: spin 1s infinite linear; }
+        #micBtn.waiting { background: #555; border-color: #777; color: #aaa; animation: breath 2s infinite ease-in-out; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+        @keyframes breath { 0% { opacity: 0.7; } 50% { opacity: 1; } 100% { opacity: 0.7; } }
+        #status { margin-top: 10px; font-size: 14px; color: #888; }
+        input[type="text"] { margin-top: 15px; padding: 10px; width: 80%; max-width: 400px; background: #222; border: 1px solid #444; color: white; border-radius: 20px; text-align: center; }
+        #fileInput { display: none; }
+        #uploadBtn { margin-top: 10px; padding: 8px 16px; background: #1a1a1a; border: 2px solid #00ffff; color: #00ffff; border-radius: 20px; cursor: pointer; font-size: 14px; transition: all 0.2s ease; }
+        #uploadBtn:hover { background: #004444; box-shadow: 0 0 10px rgba(0, 255, 255, 0.3); }
+        #uploadBtn:active { transform: scale(0.95); }
+        .upload-container { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div id="chat-container"><div class="system-msg">Connecting to Glitch...</div></div>
+    <div id="controls">
+        <div class="switch-container" id="liveLabel"><span>ALWAYS LISTEN</span><label class="switch"><input type="checkbox" id="liveToggle"><span class="slider"></span></label></div>
+        <div id="micBtn">🎤</div>
+        <div id="status">Tap to Speak</div>
+        <div class="upload-container">
+            <input type="file" id="fileInput" accept="image/*">
+            <button id="uploadBtn">📷 Upload Calendar Image</button>
+        </div>
+        <input type="text" id="manualInput" placeholder="Type message..." autocomplete="off">
+    </div>
+
+    <script>
+        const chatContainer = document.getElementById('chat-container');
+        const micBtn = document.getElementById('micBtn');
+        const status = document.getElementById('status');
+        const manualInput = document.getElementById('manualInput');
+        const liveToggle = document.getElementById('liveToggle');
+        const liveLabel = document.getElementById('liveLabel');
+        const fileInput = document.getElementById('fileInput');
+        const uploadBtn = document.getElementById('uploadBtn');
+
+        let isProcessing = false;
+        let isLiveMode = false;
+        let recognition;
+
+        window.onload = async () => {
+            try {
+                const res = await fetch('/history');
+                const history = await res.json();
+                chatContainer.innerHTML = ''; 
+                history.forEach(msg => addMessage(msg.role === 'user' ? 'user-msg' : 'ai-msg', msg.content));
+                scrollToBottom();
+            } catch (e) { chatContainer.innerHTML = '<div class="system-msg">Ready</div>'; }
+        };
+
+        function addMessage(className, text) {
+            const div = document.createElement('div');
+            div.className = `message ${className}`;
+            div.textContent = text;
+            chatContainer.appendChild(div);
+            scrollToBottom();
+        }
+        function scrollToBottom() { chatContainer.scrollTop = chatContainer.scrollHeight; }
+
+        liveToggle.addEventListener('change', (e) => {
+            isLiveMode = e.target.checked;
+            if (isLiveMode) {
+                liveLabel.classList.add('active');
+                if (!isProcessing) {
+                    // Stop any current recognition first
+                    try {
+                        recognition.stop();
+                    } catch(e) {
+                        console.log('No recognition to stop');
+                    }
+                    // Then wait for Unity and start listening
+                    waitForSilence(); 
+                }
+            } else {
+                liveLabel.classList.remove('active');
+                try {
+                    recognition.stop();
+                } catch(e) {
+                    console.log('Recognition already stopped');
+                }
+                resetUI();
+            }
+        });
+
+        // --- THE NEW LOGIC: WAIT FOR UNITY TO SHUT UP ---
+        async function waitForSilence() {
+            if (!isLiveMode) {
+                console.log('Live mode disabled, stopping wait loop');
+                return;
+            }
+            if (isProcessing) {
+                console.log('Still processing, will wait...');
+                return;
+            }
+
+            micBtn.className = 'waiting';
+            status.textContent = "Waiting for Glitch to finish...";
+
+            try {
+                const res = await fetch('/status');
+                const data = await res.json();
+                
+                if (data.isTalking) {
+                    // She is talking. Wait 500ms and check again.
+                    setTimeout(waitForSilence, 500);
+                } else {
+                    // She is silent. Start listening!
+                    console.log('Unity is silent, starting recognition...');
+                    startListening();
+                }
+            } catch (e) {
+                console.error('Error checking status:', e);
+                // Server error? Retry slowly.
+                setTimeout(waitForSilence, 2000);
+            }
+        }
+
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+            recognition.continuous = false; // We'll manage continuous mode manually
+
+            micBtn.addEventListener('click', () => {
+                if (isProcessing) { 
+                    resetUI(); 
+                    if (recognition) recognition.stop();
+                    return; 
+                }
+                if (micBtn.classList.contains('listening') || micBtn.classList.contains('live')) {
+                    // Stop listening
+                    try {
+                        recognition.stop();
+                    } catch(e) {
+                        console.log('Recognition already stopped');
+                    }
+                    if(isLiveMode) { 
+                        isLiveMode = false; 
+                        liveToggle.checked = false; 
+                        liveLabel.classList.remove('active'); 
+                    }
+                    resetUI();
+                } else {
+                    startListening();
+                }
+            });
+
+            function startListening() {
+                try { 
+                    // Try to start - if it fails because already running, stop first then restart
+                    recognition.start();
+                } catch(e) {
+                    // If error is "already started", stop and restart
+                    if (e.message && (e.message.includes('already') || e.message.includes('started'))) {
+                        console.log('Recognition already started, stopping first...');
+                        try {
+                            recognition.stop();
+                            setTimeout(() => {
+                                try {
+                                    recognition.start();
+                                } catch(retryErr) {
+                                    console.error('Failed to restart recognition:', retryErr);
+                                    status.textContent = "Error: " + retryErr.message;
+                                }
+                            }, 100);
+                        } catch(stopErr) {
+                            console.error('Failed to stop recognition:', stopErr);
+                            status.textContent = "Error: " + stopErr.message;
+                        }
+                    } else {
+                        console.error('Failed to start recognition:', e);
+                        status.textContent = "Error: " + e.message;
+                        // If it's a permission error, show helpful message
+                        if (e.name === 'NotAllowedError' || e.message.includes('permission')) {
+                            status.textContent = "⚠️ Microphone permission denied. Please allow microphone access.";
+                        }
+                    }
+                }
+            }
+
+            recognition.onstart = () => {
+                console.log('🎤 Recognition started');
+                micBtn.className = isLiveMode ? 'live' : 'listening';
+                status.textContent = isLiveMode ? "🔴 LISTENING..." : "Listening...";
+            };
+
+            recognition.onend = () => {
+                console.log('🎤 Recognition ended');
+                if (isLiveMode && !isProcessing) {
+                    // In live mode, wait for Unity to finish before restarting
+                    waitForSilence();
+                } else if (!isProcessing) {
+                    resetUI();
+                }
+            };
+
+            recognition.onresult = (event) => {
+                if (event.results && event.results.length > 0 && event.results[0].length > 0) {
+                    const speech = event.results[0][0].transcript;
+                    console.log('🎤 Speech detected:', speech);
+                    sendToGlitch(speech);
+                }
+            };
+
+            recognition.onerror = (e) => {
+                console.error('🎤 Recognition error:', e.error);
+                
+                // Handle different error types
+                if (e.error === 'no-speech') {
+                    // This is normal - just silence, don't show error
+                    if (!isLiveMode) {
+                        status.textContent = "No speech detected. Try again.";
+                    }
+                } else if (e.error === 'audio-capture') {
+                    status.textContent = "❌ No microphone found. Check your audio devices.";
+                } else if (e.error === 'not-allowed') {
+                    status.textContent = "❌ Microphone permission denied. Please allow access in browser settings.";
+                } else if (e.error === 'aborted') {
+                    // User stopped it, this is fine
+                    console.log('Recognition aborted by user');
+                } else {
+                    status.textContent = "Error: " + e.error;
+                }
+                
+                // Restart if in live mode (unless it's a fatal error)
+                if (isLiveMode && !isProcessing && e.error !== 'not-allowed' && e.error !== 'audio-capture') {
+                    setTimeout(waitForSilence, 500);
+                } else if (!isProcessing && e.error !== 'aborted') {
+                    resetUI();
+                }
+            };
+        } else {
+            micBtn.style.display = 'none';
+            status.textContent = "Mic not supported";
+        }
+
+        async function sendToGlitch(text) {
+            if (!text) return;
+            isProcessing = true;
+            micBtn.className = 'processing';
+            status.textContent = "Thinking...";
+            addMessage('user-msg', text);
+
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text })
+                });
+                const data = await response.json();
+                if (data.message) addMessage('ai-msg', data.message);
+            } catch (err) {
+                addMessage('system-msg', "Server Error");
+            } finally {
+                isProcessing = false;
+                if (isLiveMode) {
+                    waitForSilence(); // Go back to checking for silence
+                } else {
+                    resetUI();
+                }
+            }
+        }
+
+        function resetUI() {
+            isProcessing = false;
+            micBtn.className = '';
+            status.textContent = "Tap to Speak";
+        }
+        manualInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') { sendToGlitch(manualInput.value); manualInput.value = ''; }
+        });
+
+        // File upload handler
+        uploadBtn.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            // Check if it's an image
+            if (!file.type.startsWith('image/')) {
+                addMessage('system-msg', 'Please select an image file');
+                return;
+            }
+
+            // Show loading state
+            uploadBtn.textContent = '📤 Uploading...';
+            uploadBtn.disabled = true;
+            status.textContent = 'Processing image...';
+
+            try {
+                // Compress and convert file to base64
+                const base64 = await compressAndConvertToBase64(file);
+                
+                // Send to server with message to sync calendar
+                addMessage('user-msg', `📷 Uploaded calendar image: ${file.name}`);
+                isProcessing = true;
+                micBtn.className = 'processing';
+
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        message: `Sync this calendar image to my Google Calendar`,
+                        image: base64
+                    })
+                });
+
+                const data = await response.json();
+                if (data.message) {
+                    addMessage('ai-msg', data.message);
+                }
+            } catch (err) {
+                console.error('Upload error:', err);
+                addMessage('system-msg', 'Failed to upload image: ' + err.message);
+            } finally {
+                uploadBtn.textContent = '📷 Upload Calendar Image';
+                uploadBtn.disabled = false;
+                fileInput.value = ''; // Reset file input
+                isProcessing = false;
+                if (isLiveMode) {
+                    waitForSilence();
+                } else {
+                    resetUI();
+                }
+            }
+        });
+
+        function compressAndConvertToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        // Create canvas for compression
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        
+                        // Calculate new dimensions (max 2000px width, maintain aspect ratio)
+                        const maxWidth = 2000;
+                        const maxHeight = 2000;
+                        let width = img.width;
+                        let height = img.height;
+                        
+                        if (width > maxWidth || height > maxHeight) {
+                            if (width > height) {
+                                height = (height * maxWidth) / width;
+                                width = maxWidth;
+                            } else {
+                                width = (width * maxHeight) / height;
+                                height = maxHeight;
+                            }
+                        }
+                        
+                        canvas.width = width;
+                        canvas.height = height;
+                        
+                        // Draw and compress (quality 0.7 for good balance)
+                        ctx.drawImage(img, 0, 0, width, height);
+                        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
+                        
+                        console.log(`📊 Image compressed: ${(file.size / 1024).toFixed(1)}KB → ${(compressedBase64.length / 1024).toFixed(1)}KB`);
+                        resolve(compressedBase64);
+                    };
+                    img.onerror = reject;
+                    img.src = e.target.result;
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+    </script>
+</body>
+</html>

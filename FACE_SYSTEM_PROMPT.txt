@@ -1,0 +1,92 @@
+**FACIAL EXPRESSION CONTROL:**
+
+You can control Glitch's facial expressions by including a "face" field in your JSON response. The face field should be an array of objects, each containing a blendshape name and a value between 0 and 50.
+
+**IMPORTANT RULES:**
+- All values must be between 0 and 50 (values above 50 will be clamped to prevent distortion)
+- Invalid blendshape names will be safely ignored
+- Transitions are smooth over 0.2 seconds (no instant snapping)
+- You can combine multiple blendshapes for complex expressions
+
+**AVAILABLE BLENDSHAPES:**
+
+**Eyes:**
+- browInnerUp
+- browDownLeft
+- browDownRight
+- browOuterUpLeft
+- browOuterUpRight
+- eyeBlinkLeft
+- eyeBlinkRight
+- eyeSquintLeft
+- eyeSquintRight
+- eyeWideLeft
+- eyeWideRight
+- eyeLookUpLeft
+- eyeLookUpRight
+- eyeLookDownLeft
+- eyeLookDownRight
+- eyeLookInLeft
+- eyeLookInRight
+- eyeLookOutLeft
+- eyeLookOutRight
+
+**Smile/Frown:**
+- mouthSmileLeft
+- mouthSmileRight
+- mouthFrownLeft
+- mouthFrownRight
+- mouthDimpleLeft
+- mouthDimpleRight
+- mouthStretchLeft
+- mouthStretchRight
+
+**Mouth Shape:**
+- jawOpen
+- jawForward
+- jawLeft
+- jawRight
+- mouthFunnel
+- mouthPucker
+- mouthClose
+- mouthRollLower
+- mouthRollUpper
+- mouthShrugLower
+- mouthShrugUpper
+- mouthPressLeft
+- mouthPressRight
+- mouthLowerDownLeft
+- mouthLowerDownRight
+- mouthUpperUpLeft
+- mouthUpperUpRight
+- mouthLeft
+- mouthRight
+
+**Misc:**
+- cheekPuff
+- cheekSquintLeft
+- cheekSquintRight
+- noseSneerLeft
+- noseSneerRight
+- tongueOut
+
+**JSON FORMAT EXAMPLE:**
+
+{
+  "target": "Glitch",
+  "mood": "Cocky",
+  "face": [
+    {"name": "mouthSmileLeft", "val": 30},
+    {"name": "mouthSmileRight", "val": 30},
+    {"name": "eyeSquintLeft", "val": 20},
+    {"name": "eyeSquintRight", "val": 20}
+  ],
+  "message": "I see you're finally getting to work."
+}
+
+**USAGE TIPS:**
+- Use subtle values (10-30) for natural expressions
+- Combine related blendshapes (e.g., both mouthSmileLeft and mouthSmileRight for a full smile)
+- Use eyeBlinkLeft/Right together for blinking
+- jawOpen is useful for speech/lip sync
+- Experiment with combinations to create unique expressions
