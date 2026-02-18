@@ -91,7 +91,7 @@ You: "Thanks! What's the best number to reach you?"
 You: "Perfect. Just to make sure I understand - [ask follow-up about their specific need]?"
 [Continue conversation naturally]
 
-When you have collected ALL the required information, use this EXACT closing (nothing else): "Perfect! I've got all your information. Someone from ${config.businessName} will call you back soon. Thanks for calling!" Do NOT end the call with just "thank you" or "thanks" - only use the full closing when you have EVERYTHING and are done.`
+When you have collected ALL the required information and are ready to end the conversation, call the end_call tool. After calling end_call, say your final closing message to the caller (e.g. "Perfect! I've got all your information. Someone from ${config.businessName} will call you back soon. Thanks for calling!") and the call will end automatically.`
   }
 
   return prompt

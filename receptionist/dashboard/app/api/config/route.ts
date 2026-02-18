@@ -1,59 +1,80 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createServerSupabase } from '@/lib/supabase/client'
+import { createClient } from '@/lib/supabase/server'
 
-// GET - Load config
+// GET - Load config for the current user's business
 export async function GET() {
   try {
-    const supabase = createServerSupabase()
+    const supabase = await createClient()
+    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    if (userError || !user) {
+      console.log('[API config GET] no user', { userError: userError?.message })
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+    console.log('[API config GET] user', { id: user.id, email: user.email })
 
     const { data, error } = await supabase
       .from('business_profiles')
-      .select('business_name, bot_config')
+      .select('business_name, bot_config, twilio_phone_number, calendar_id, updated_at')
+      .eq('user_id', user.id)
       .eq('is_active', true)
       .limit(1)
-      .single()
+      .maybeSingle()
 
-    if (error && error.code !== 'PGRST116') {
+    if (error) {
+      console.log('[API config GET] Supabase error', error.message)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
     if (!data) {
-      return NextResponse.json({ config: null })
+      console.log('[API config GET] no profile for user_id', user.id)
+      return NextResponse.json({ config: null, saved_at: null })
     }
 
-    return NextResponse.json({
+    const botConfig = data.bot_config as Record<string, unknown> | null
+    const payload = {
       config: {
         businessName: data.business_name || '',
-        tone: data.bot_config?.tone || 'professional',
-        customKnowledge: data.bot_config?.customKnowledge || '',
-        requiredLeadInfo: data.bot_config?.requiredLeadInfo || []
-      }
-    })
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+        tone: (botConfig?.tone as string) || 'professional',
+        customKnowledge: (botConfig?.customKnowledge as string) || '',
+        requiredLeadInfo: (botConfig?.requiredLeadInfo as string[]) || [],
+      },
+      twilio_phone_number: data.twilio_phone_number ?? null,
+      calendar_id: data.calendar_id ?? (botConfig?.google_calendar_id as string) ?? null,
+      saved_at: data.updated_at ?? null,
+    }
+    console.log('[API config GET] returning profile', { business_name: data.business_name, twilio_phone_number: data.twilio_phone_number, calendar_id: data.calendar_id })
+    return NextResponse.json(payload)
+  } catch (error: unknown) {
+    return NextResponse.json({ error: (error as Error).message }, { status: 500 })
   }
 }
 
-// POST - Save config
+// POST - Save config for the current user's business
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { businessName, tone, customKnowledge, requiredLeadInfo } = body
+    const supabase = await createClient()
+    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    if (userError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
 
-    const supabase = createServerSupabase()
+    const body = await request.json()
+    const { businessName, tone, customKnowledge, requiredLeadInfo, twilio_phone_number, calendar_id } = body
 
     const botConfig = {
       tone: tone || 'professional',
       customKnowledge: customKnowledge || '',
-      requiredLeadInfo: requiredLeadInfo || []
+      requiredLeadInfo: requiredLeadInfo || [],
+      ...(calendar_id != null && { google_calendar_id: calendar_id }),
     }
 
     const { data: existing } = await supabase
       .from('business_profiles')
       .select('id')
+      .eq('user_id', user.id)
       .eq('is_active', true)
       .limit(1)
-      .single()
+      .maybeSingle()
 
     if (existing) {
       const { error } = await supabase
@@ -61,7 +82,9 @@ export async function POST(request: NextRequest) {
         .update({
           business_name: businessName,
           bot_config: botConfig,
-          updated_at: new Date().toISOString()
+          twilio_phone_number: twilio_phone_number ?? null,
+          calendar_id: calendar_id ?? null,
+          updated_at: new Date().toISOString(),
         })
         .eq('id', existing.id)
 
@@ -70,16 +93,19 @@ export async function POST(request: NextRequest) {
       const { error } = await supabase
         .from('business_profiles')
         .insert({
+          user_id: user.id,
           business_name: businessName,
           bot_config: botConfig,
-          is_active: true
+          twilio_phone_number: twilio_phone_number ?? null,
+          calendar_id: calendar_id ?? null,
+          is_active: true,
         })
 
       if (error) throw error
     }
 
     return NextResponse.json({ success: true })
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+  } catch (error: unknown) {
+    return NextResponse.json({ error: (error as Error).message }, { status: 500 })
   }
 }

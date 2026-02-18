@@ -33,31 +33,53 @@ export default function ConfigPage() {
     customKnowledge: '',
     requiredLeadInfo: []
   })
+  const [twilioPhoneNumber, setTwilioPhoneNumber] = useState('')
+  const [calendarId, setCalendarId] = useState('')
+  const [savedAt, setSavedAt] = useState<string | null>(null)
 
-  // Load existing config on mount
+  // Load existing config once on mount (empty deps — do not add loadConfig to avoid re-run loops)
   useEffect(() => {
-    loadConfig()
+    let cancelled = false
+    setLoading(true)
+    console.log('[CONFIG] fetch starting GET /api/config')
+    fetch('/api/config')
+      .then((res) => {
+        console.log('[CONFIG] fetch response', { status: res.status, ok: res.ok })
+        return res.json().then((data) => ({ ok: res.ok, data }))
+      })
+      .then(({ ok, data }) => {
+        if (cancelled) return
+        console.log('[CONFIG] API response data', { ok, data })
+        if (!ok) {
+          console.log('[CONFIG] API returned error', data?.error)
+          toast.error(data?.error || 'Failed to load configuration')
+          return
+        }
+        if (data.config) {
+          console.log('[CONFIG] setting config from API', data.config)
+          setConfig(data.config)
+        } else {
+          console.log('[CONFIG] no config in response (no profile yet)')
+        }
+        const twilio = data.twilio_phone_number ?? ''
+        const calendar = data.calendar_id ?? ''
+        const saved = data.saved_at ?? null
+        console.log('[CONFIG] setting form fields', { twilio_phone_number: twilio, calendar_id: calendar, saved_at: saved })
+        setTwilioPhoneNumber(twilio)
+        setCalendarId(calendar)
+        setSavedAt(saved)
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error('[CONFIG] fetch failed', error)
+          toast.error(error?.message || 'Failed to load configuration')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
   }, [])
-
-  async function loadConfig() {
-    try {
-      setLoading(true)
-
-      const res = await fetch('/api/config')
-      const data = await res.json()
-
-      if (!res.ok) throw new Error(data.error || 'Failed to load')
-
-      if (data.config) {
-        setConfig(data.config)
-      }
-    } catch (error: any) {
-      console.error('Error loading config:', error)
-      toast.error(error.message || 'Failed to load configuration')
-    } finally {
-      setLoading(false)
-    }
-  }
 
   async function saveConfig() {
     try {
@@ -70,7 +92,9 @@ export default function ConfigPage() {
           businessName: config.businessName,
           tone: config.tone,
           customKnowledge: config.customKnowledge,
-          requiredLeadInfo: config.requiredLeadInfo
+          requiredLeadInfo: config.requiredLeadInfo,
+          twilio_phone_number: twilioPhoneNumber.trim() || null,
+          calendar_id: calendarId.trim() || null,
         })
       })
 
@@ -78,6 +102,7 @@ export default function ConfigPage() {
 
       if (!res.ok) throw new Error(data.error || 'Failed to save')
 
+      setSavedAt(new Date().toISOString())
       toast.success('Configuration saved successfully!')
     } catch (error: any) {
       console.error('Error saving config:', error)
@@ -97,6 +122,10 @@ export default function ConfigPage() {
   }
 
   const promptPreview = buildSystemPrompt({ config, includeExamples: true })
+  const hasExistingSetup = !!(config.businessName?.trim() || twilioPhoneNumber?.trim() || calendarId?.trim() || savedAt)
+  const savedAtLabel = savedAt
+    ? new Date(savedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    : null
 
   if (loading) {
     return (
@@ -113,16 +142,64 @@ export default function ConfigPage() {
         <div className="mb-8">
           <div className="flex items-center gap-3 mb-2">
             <Building2 className="w-8 h-8 text-slate-700" />
-            <h1 className="text-3xl font-bold text-slate-900">Bot Configuration</h1>
+            <h1 className="text-3xl font-bold text-slate-900">
+              {hasExistingSetup ? 'Edit configuration' : 'Bot configuration'}
+            </h1>
           </div>
-          <p className="text-slate-600">Customize your AI receptionist's personality and behavior</p>
+          <p className="text-slate-600">
+            {hasExistingSetup
+              ? 'Update your AI receptionist and business details below. Changes are saved to your account.'
+              : 'Set up your AI receptionist: business name, tone, and what to collect from callers.'}
+          </p>
         </div>
+
+        {/* No profile linked — explain the disconnect */}
+        {!hasExistingSetup && (
+          <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
+            <p className="font-medium mb-1">No business profile linked to your account yet.</p>
+            <p className="text-amber-800">
+              The dashboard only loads the profile whose <code className="bg-amber-100 px-1 rounded">user_id</code> matches your login.
+              You can either: <strong>fill the form below and click Save</strong> to create a new profile, or in Supabase Table Editor open{' '}
+              <code className="bg-amber-100 px-1 rounded">business_profiles</code>, pick the row you want (e.g. the one with your Twilio number),
+              and set its <code className="bg-amber-100 px-1 rounded">user_id</code> to your user ID so this page loads that profile.
+            </p>
+          </div>
+        )}
+
+        {/* Current saved state summary */}
+        {hasExistingSetup && (
+          <div className="mb-6 p-4 bg-white rounded-lg border border-slate-200 shadow-sm">
+            <h2 className="text-sm font-semibold text-slate-700 mb-3">Current setup (from Supabase)</h2>
+            <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+              <div>
+                <dt className="text-slate-500">Business</dt>
+                <dd className="font-medium text-slate-900">{config.businessName || '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-slate-500">Twilio number</dt>
+                <dd className="font-medium text-slate-900">{twilioPhoneNumber || '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-slate-500">Calendar ID</dt>
+                <dd className="font-medium text-slate-900 truncate" title={calendarId || undefined}>{calendarId || '—'}</dd>
+              </div>
+              {savedAtLabel && (
+                <div>
+                  <dt className="text-slate-500">Last saved</dt>
+                  <dd className="font-medium text-slate-900">{savedAtLabel}</dd>
+                </div>
+              )}
+            </dl>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Left: Configuration Form */}
           <div className="space-y-6">
             <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-6">
-              <h2 className="text-xl font-semibold text-slate-900 mb-6">Bot Settings</h2>
+              <h2 className="text-xl font-semibold text-slate-900 mb-6">
+                {hasExistingSetup ? 'Edit bot settings' : 'Bot settings'}
+              </h2>
 
               {/* Business Name */}
               <div className="mb-6">
@@ -137,6 +214,38 @@ export default function ConfigPage() {
                   placeholder="e.g., Acme Plumbing"
                   className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
                 />
+              </div>
+
+              {/* Twilio Phone Number */}
+              <div className="mb-6">
+                <label htmlFor="twilioPhone" className="block text-sm font-medium text-slate-700 mb-2">
+                  Twilio Phone Number (E.164)
+                </label>
+                <input
+                  id="twilioPhone"
+                  type="text"
+                  value={twilioPhoneNumber}
+                  onChange={(e) => setTwilioPhoneNumber(e.target.value)}
+                  placeholder="e.g., +15155551234"
+                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                />
+                <p className="mt-1 text-xs text-slate-500">The number callers dial. Used to route to this business.</p>
+              </div>
+
+              {/* Google Calendar ID */}
+              <div className="mb-6">
+                <label htmlFor="calendarId" className="block text-sm font-medium text-slate-700 mb-2">
+                  Google Calendar ID
+                </label>
+                <input
+                  id="calendarId"
+                  type="text"
+                  value={calendarId}
+                  onChange={(e) => setCalendarId(e.target.value)}
+                  placeholder="e.g., you@company.com or primary"
+                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                />
+                <p className="mt-1 text-xs text-slate-500">Calendar shared with your service account for booking.</p>
               </div>
 
               {/* Bot Tone */}
@@ -210,7 +319,7 @@ export default function ConfigPage() {
                 ) : (
                   <>
                     <Save className="w-5 h-5" />
-                    Save Configuration
+                    {hasExistingSetup ? 'Save changes' : 'Save configuration'}
                   </>
                 )}
               </button>

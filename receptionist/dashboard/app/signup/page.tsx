@@ -1,0 +1,85 @@
+'use client'
+
+import { useState } from 'react'
+import Link from 'next/link'
+import { createClient } from '@/lib/supabase/browser'
+import { toast } from 'sonner'
+
+export default function SignupPage() {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [businessName, setBusinessName] = useState('')
+  const [loading, setLoading] = useState(false)
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setLoading(true)
+    try {
+      const supabase = createClient()
+      const { data: authData, error: authError } = await supabase.auth.signUp({ email, password })
+      if (authError) throw authError
+      if (!authData.user) throw new Error('Signup failed')
+      toast.success('Account created! Complete your business setup in the dashboard.')
+      window.location.href = '/dashboard/config'
+    } catch (err: unknown) {
+      toast.error((err as Error).message ?? 'Sign up failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center px-4">
+      <div className="max-w-sm w-full bg-white rounded-xl border border-slate-200 shadow-sm p-8">
+        <h1 className="text-xl font-bold text-slate-900 mb-6">Sign up</h1>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label htmlFor="businessName" className="block text-sm font-medium text-slate-700 mb-1">Business name</label>
+            <input
+              id="businessName"
+              type="text"
+              value={businessName}
+              onChange={(e) => setBusinessName(e.target.value)}
+              className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              placeholder="Acme Plumbing"
+            />
+          </div>
+          <div>
+            <label htmlFor="email" className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+            <input
+              id="email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              placeholder="you@example.com"
+            />
+          </div>
+          <div>
+            <label htmlFor="password" className="block text-sm font-medium text-slate-700 mb-1">Password</label>
+            <input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              minLength={6}
+              className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              placeholder="At least 6 characters"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full py-3 px-4 bg-slate-900 text-white rounded-lg font-medium hover:bg-slate-800 disabled:opacity-50 transition"
+          >
+            {loading ? 'Creating account...' : 'Create account'}
+          </button>
+        </form>
+        <p className="mt-6 text-center text-sm text-slate-500">
+          Already have an account? <Link href="/login" className="text-blue-600 hover:underline">Log in</Link>
+        </p>
+      </div>
+    </div>
+  )
+}
