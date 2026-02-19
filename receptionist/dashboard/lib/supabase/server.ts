@@ -18,17 +18,17 @@ export async function createClient() {
           // Ignore in Server Components
         }
       },
-      get(name) {
+      get(name: string) {
         return cookieStore.get(name)?.value
       },
-      set(name, value, options) {
+      set(name: string, value: string, options?: any) {
         try {
           cookieStore.set(name, value, options ?? { path: '/' })
         } catch {
           // Ignore in Server Components
         }
       },
-      remove(name, options) {
+      remove(name: string, options?: any) {
         try {
           cookieStore.set(name, '', { ...options, maxAge: 0, path: '/' })
         } catch {

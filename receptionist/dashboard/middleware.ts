@@ -14,19 +14,19 @@ export async function middleware(request: NextRequest) {
       getAll() {
         return request.cookies.getAll()
       },
-      setAll(cookiesToSet) {
+      setAll(cookiesToSet: Array<{ name: string; value: string; options?: any }>) {
         cookiesToSet.forEach(({ name, value, options }) => {
           response.cookies.set(name, value, options)
         })
       },
       // Supabase SSR getItem() uses cookies.get(name) to read chunks; without this the server never sees the session
-      get(name) {
+      get(name: string) {
         return request.cookies.get(name)?.value
       },
-      set(name, value, options) {
+      set(name: string, value: string, options?: any) {
         response.cookies.set(name, value, options ?? { path: '/' })
       },
-      remove(name, options) {
+      remove(name: string, options?: any) {
         response.cookies.set(name, '', { ...options, maxAge: 0, path: '/' })
       },
     },
