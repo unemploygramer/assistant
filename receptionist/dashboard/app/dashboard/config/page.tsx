@@ -34,6 +34,7 @@ export default function ConfigPage() {
     requiredLeadInfo: []
   })
   const [twilioPhoneNumber, setTwilioPhoneNumber] = useState('')
+  const [ownerPhone, setOwnerPhone] = useState('')
   const [calendarId, setCalendarId] = useState('')
   const [savedAt, setSavedAt] = useState<string | null>(null)
 
@@ -62,10 +63,12 @@ export default function ConfigPage() {
           console.log('[CONFIG] no config in response (no profile yet)')
         }
         const twilio = data.twilio_phone_number ?? ''
+        const owner = data.owner_phone ?? ''
         const calendar = data.calendar_id ?? ''
         const saved = data.saved_at ?? null
-        console.log('[CONFIG] setting form fields', { twilio_phone_number: twilio, calendar_id: calendar, saved_at: saved })
+        console.log('[CONFIG] setting form fields', { twilio_phone_number: twilio, owner_phone: owner, calendar_id: calendar, saved_at: saved })
         setTwilioPhoneNumber(twilio)
+        setOwnerPhone(owner)
         setCalendarId(calendar)
         setSavedAt(saved)
       })
@@ -94,6 +97,7 @@ export default function ConfigPage() {
           customKnowledge: config.customKnowledge,
           requiredLeadInfo: config.requiredLeadInfo,
           twilio_phone_number: twilioPhoneNumber.trim() || null,
+          owner_phone: ownerPhone.trim() || null,
           calendar_id: calendarId.trim() || null,
         })
       })
@@ -122,7 +126,7 @@ export default function ConfigPage() {
   }
 
   const promptPreview = buildSystemPrompt({ config, includeExamples: true })
-  const hasExistingSetup = !!(config.businessName?.trim() || twilioPhoneNumber?.trim() || calendarId?.trim() || savedAt)
+  const hasExistingSetup = !!(config.businessName?.trim() || twilioPhoneNumber?.trim() || ownerPhone?.trim() || calendarId?.trim() || savedAt)
   const savedAtLabel = savedAt
     ? new Date(savedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
     : null
@@ -180,6 +184,10 @@ export default function ConfigPage() {
                 <dd className="font-medium text-slate-900">{twilioPhoneNumber || '—'}</dd>
               </div>
               <div>
+                <dt className="text-slate-500">Your phone (SMS alerts)</dt>
+                <dd className="font-medium text-slate-900">{ownerPhone || '—'}</dd>
+              </div>
+              <div>
                 <dt className="text-slate-500">Calendar ID</dt>
                 <dd className="font-medium text-slate-900 truncate" title={calendarId || undefined}>{calendarId || '—'}</dd>
               </div>
@@ -230,6 +238,22 @@ export default function ConfigPage() {
                   className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
                 />
                 <p className="mt-1 text-xs text-slate-500">The number callers dial. Used to route to this business.</p>
+              </div>
+
+              {/* Your phone (SMS alerts) */}
+              <div className="mb-6">
+                <label htmlFor="ownerPhone" className="block text-sm font-medium text-slate-700 mb-2">
+                  Your phone (SMS lead alerts)
+                </label>
+                <input
+                  id="ownerPhone"
+                  type="text"
+                  value={ownerPhone}
+                  onChange={(e) => setOwnerPhone(e.target.value)}
+                  placeholder="e.g., +17145551234"
+                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                />
+                <p className="mt-1 text-xs text-slate-500">We text this number when a new lead comes in (same time as email). E.164 format.</p>
               </div>
 
               {/* Google Calendar ID */}

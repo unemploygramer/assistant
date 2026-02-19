@@ -4,6 +4,7 @@ npm-debug.log
 .env
 memory.json
 credentials.json
+creds.json
 
 # Unity
 [Ll]ibrary/

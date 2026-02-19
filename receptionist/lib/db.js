@@ -15,7 +15,18 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error('Supabase credentials missing');
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+// Custom fetch: longer timeout (25s) to avoid ConnectTimeoutError when Supabase is slow
+const SUPABASE_FETCH_TIMEOUT_MS = 25000;
+const originalFetch = globalThis.fetch;
+function fetchWithTimeout(input, init = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SUPABASE_FETCH_TIMEOUT_MS);
+  return originalFetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  global: { fetch: fetchWithTimeout }
+});
 
 /**
  * Upsert session transcript (saves every utterance during call)
@@ -57,27 +68,40 @@ async function upsertSession(callSid, messages, metadata = {}) {
 }
 
 /**
- * Get session by Call SID (for recovery on restart)
+ * Get session by Call SID (for recovery on restart).
+ * Retries on connect/timeout errors (transient network issues).
  * @param {string} callSid - Twilio Call SID
  */
 async function getSession(callSid) {
-  try {
-    const { data, error } = await supabase
-      .from('sessions')
-      .select('*')
-      .eq('call_sid', callSid)
-      .single();
+  const maxAttempts = 3;
+  const retryDelayMs = 800;
 
-    if (error && error.code !== 'PGRST116') { // PGRST116 = not found
-      console.error('❌ Supabase get session error:', error);
-      throw error;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const { data, error } = await supabase
+        .from('sessions')
+        .select('*')
+        .eq('call_sid', callSid)
+        .single();
+
+      if (error && error.code !== 'PGRST116') { // PGRST116 = not found
+        console.error('❌ Supabase get session error:', error);
+        throw error;
+      }
+
+      return data;
+    } catch (error) {
+      const isRetryable = /fetch failed|timeout|UND_ERR_CONNECT_TIMEOUT|ECONNRESET|ETIMEDOUT/i.test(error?.message || '');
+      if (isRetryable && attempt < maxAttempts) {
+        console.warn(`⚠️ getSession attempt ${attempt}/${maxAttempts} failed (${error.message}), retrying in ${retryDelayMs}ms...`);
+        await new Promise(r => setTimeout(r, retryDelayMs));
+        continue;
+      }
+      console.error('❌ Failed to get session:', error.message);
+      return null;
     }
-
-    return data;
-  } catch (error) {
-    console.error('❌ Failed to get session:', error.message);
-    return null;
   }
+  return null;
 }
 
 /**
@@ -104,34 +128,38 @@ async function deleteSession(callSid) {
 }
 
 /**
- * Save lead to database
+ * Save lead to database.
+ * - phone: caller/callback number (who called in or number they gave).
+ * - from_number: business line (Twilio number that RECEIVED the call). Used to join to business_profiles.twilio_phone_number so the right dashboard user sees the lead.
  * @param {Object} leadData - Lead data object
  * @returns {Promise<Object>} Created lead record
  */
 async function saveLead(leadData) {
   try {
+    const row = {
+      phone: leadData.phone,
+      transcript: leadData.transcript,
+      summary: leadData.summary,
+      status: leadData.status || 'new',
+      industry: leadData.industry || 'Residential Services',
+      call_sid: leadData.callSid,
+      from_number: leadData.fromNumber // business line = links lead to owner
+    };
+    console.log('[DB] saveLead insert: phone(caller)=%s, from_number(business line)=%s, call_sid=%s', row.phone, row.from_number, row.call_sid);
     const { data, error } = await supabase
       .from('leads')
-      .insert({
-        phone: leadData.phone,
-        transcript: leadData.transcript,
-        summary: leadData.summary,
-        status: leadData.status || 'new',
-        industry: leadData.industry || 'Residential Services',
-        call_sid: leadData.callSid,
-        from_number: leadData.fromNumber
-      })
+      .insert(row)
       .select()
       .single();
 
     if (error) {
-      console.error('❌ Supabase save lead error:', error);
+      console.error('❌ [DB] Supabase save lead error:', error.message, error.code, error.details);
       throw error;
     }
-
+    console.log('[DB] saveLead success: id=%s', data?.id);
     return data;
   } catch (error) {
-    console.error('❌ Failed to save lead:', error.message);
+    console.error('❌ [DB] Failed to save lead:', error.message);
     throw error;
   }
 }
@@ -206,6 +234,67 @@ async function updateNotification(notificationId, updates) {
 }
 
 /**
+ * Get bot config from business_profiles (used for AI prompt injection)
+ * Optionally filter by Twilio phone number for multi-tenant
+ * @param {string} [twilioPhoneNumber] - The number that was called (for multi-tenant)
+ * @returns {Promise<Object|null>} - { businessName, tone, customKnowledge, requiredLeadInfo } or null
+ */
+async function getBotConfig(twilioPhoneNumber = null) {
+  try {
+    // If we have a phone number, try to match it (for multi-tenant)
+    if (twilioPhoneNumber) {
+      const { data: match, error: matchError } = await supabase
+        .from('business_profiles')
+        .select('business_name, bot_config, calendar_id, twilio_phone_number, owner_phone')
+        .eq('is_active', true)
+        .eq('twilio_phone_number', twilioPhoneNumber)
+        .limit(1)
+        .maybeSingle();
+
+      if (!matchError && match) {
+        return {
+          businessName: match.business_name || 'Your Business',
+          tone: match.bot_config?.tone || 'professional',
+          customKnowledge: match.bot_config?.customKnowledge || '',
+          requiredLeadInfo: match.bot_config?.requiredLeadInfo || [],
+          google_calendar_id: match.bot_config?.google_calendar_id || match.calendar_id || null,
+          twilio_phone_number: match.twilio_phone_number || null,
+          owner_phone: match.owner_phone || null
+        };
+      }
+    }
+
+    // Fallback: first active profile
+    const { data, error } = await supabase
+      .from('business_profiles')
+      .select('business_name, bot_config, calendar_id, twilio_phone_number, owner_phone')
+      .eq('is_active', true)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.error('❌ Supabase getBotConfig error:', error);
+      return null;
+    }
+
+    if (!data) return null;
+
+    return {
+      businessName: data.business_name || 'Your Business',
+      tone: data.bot_config?.tone || 'professional',
+      customKnowledge: data.bot_config?.customKnowledge || '',
+      requiredLeadInfo: data.bot_config?.requiredLeadInfo || [],
+      google_calendar_id: data.bot_config?.google_calendar_id || data.calendar_id || null,
+      twilio_phone_number: data.twilio_phone_number || null,
+      owner_phone: data.owner_phone || null
+    };
+  } catch (error) {
+    console.error('❌ Failed to get bot config:', error.message);
+    return null;
+  }
+}
+
+/**
  * Get all leads (for admin dashboard)
  * @param {Object} options - Query options (limit, status, etc.)
  */
@@ -246,5 +335,6 @@ module.exports = {
   saveLead,
   logNotification,
   updateNotification,
-  getLeads
+  getLeads,
+  getBotConfig
 };

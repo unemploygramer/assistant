@@ -1,6 +1,7 @@
-# start-phone.ps1 - One command to rule them all
-# Load .env file to get Twilio credentials
-$envPath = Join-Path $PSScriptRoot ".." ".env"
+# start-phone.ps1 - Phone server + Cloudflare Tunnel (no ngrok)
+# Load .env from project root
+$rootDir = Split-Path -Parent $PSScriptRoot
+$envPath = Join-Path $rootDir ".env"
 if (Test-Path $envPath) {
     Get-Content $envPath | ForEach-Object {
         if ($_ -match '^\s*([^#][^=]+)=(.*)$') {
@@ -11,135 +12,122 @@ if (Test-Path $envPath) {
     }
 }
 
-Write-Host "Starting Phone Server + Ngrok..." -ForegroundColor Cyan
+Write-Host "Starting Phone Server + Cloudflare Tunnel..." -ForegroundColor Cyan
 
-# Kill any existing ngrok/phone_server processes
-Get-Process -Name ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
-Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*node*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+# Refresh PATH
+$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
-# Start ngrok in background
-Write-Host "Starting ngrok..." -ForegroundColor Yellow
-$ngrokProcess = Start-Process -FilePath "ngrok" -ArgumentList "http 3001" -PassThru -WindowStyle Hidden
+# Kill existing cloudflared (avoid duplicate tunnels). Don't kill all node - dashboard may be on 3000.
+Get-Process -Name cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force
 
-# Wait for ngrok to start
-Start-Sleep -Seconds 3
+$port = $env:PHONE_SERVER_PORT
+if (-not $port) { $port = 3001 }
+$env:PHONE_SERVER_PORT = $port
+$env:PORT = $port
 
-# Get ngrok URL from API
-Write-Host "Fetching ngrok URL..." -ForegroundColor Yellow
-$maxRetries = 10
-$retryCount = 0
-$ngrokUrl = $null
+# Your permanent Cloudflare domain (same as start-cloudflare.ps1)
+$cloudflareDomain = "voicemail.snaptabapp.com"
+$cloudflareUrl = "https://$cloudflareDomain"
+$tunnelName = "voicemail-assistant"
 
-while ($retryCount -lt $maxRetries -and -not $ngrokUrl) {
-    try {
-        $response = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
-        $httpsTunnel = $response.tunnels | Where-Object { $_.proto -eq 'https' }
-        if ($httpsTunnel) {
-            $ngrokUrl = $httpsTunnel.public_url
-        }
-    } catch {
-        $retryCount++
-        if ($retryCount -lt $maxRetries) {
-            Start-Sleep -Seconds 1
-        }
+Write-Host "Starting phone server on port $port (new window for logs)..." -ForegroundColor Yellow
+$serverCmd = "cd '$PSScriptRoot'; `$env:PHONE_SERVER_PORT='$port'; `$env:PORT='$port'; node phone_server.js"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", $serverCmd
+
+Start-Sleep -Seconds 4
+
+Write-Host "Starting Cloudflare Tunnel ($tunnelName -> http://localhost:$port)..." -ForegroundColor Yellow
+
+$cloudflaredPath = $null
+try {
+    $cloudflaredCmd = Get-Command cloudflared -ErrorAction Stop
+    $cloudflaredPath = $cloudflaredCmd.Source
+    Write-Host "Found cloudflared: $cloudflaredPath" -ForegroundColor Green
+} catch {
+    $possiblePaths = @(
+        "$env:USERPROFILE\AppData\Local\cloudflared\cloudflared.exe",
+        "$env:LOCALAPPDATA\cloudflared\cloudflared.exe",
+        "$env:ProgramFiles\cloudflared\cloudflared.exe"
+    )
+    foreach ($p in $possiblePaths) {
+        if (Test-Path $p) { $cloudflaredPath = $p; break }
     }
+    if (-not $cloudflaredPath) { $cloudflaredPath = "cloudflared" }
 }
 
-if (-not $ngrokUrl) {
-    Write-Host "Failed to get ngrok URL. Make sure ngrok is installed and running." -ForegroundColor Red
-    Stop-Process -Id $ngrokProcess.Id -Force -ErrorAction SilentlyContinue
+try {
+    if ($cloudflaredPath -and $cloudflaredPath -ne "cloudflared") {
+        $cloudflaredProcess = Start-Process -FilePath $cloudflaredPath `
+            -ArgumentList "tunnel", "run", "--url", "http://localhost:$port", $tunnelName `
+            -NoNewWindow -PassThru
+    } else {
+        $cloudflaredProcess = Start-Process -FilePath "cloudflared" `
+            -ArgumentList "tunnel", "run", "--url", "http://localhost:$port", $tunnelName `
+            -NoNewWindow -PassThru
+    }
+} catch {
+    Write-Host "Failed to start cloudflared: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Run manually: cloudflared tunnel run --url http://localhost:$port $tunnelName" -ForegroundColor Yellow
     exit 1
 }
 
+Start-Sleep -Seconds 3
+
 Write-Host ""
 Write-Host ("=" * 60) -ForegroundColor Green
-Write-Host "NGROK URL:" -ForegroundColor Green
-Write-Host "   $ngrokUrl" -ForegroundColor White -BackgroundColor DarkGreen
+Write-Host "CLOUDFLARE URL (PERMANENT):" -ForegroundColor Green
+Write-Host "   $cloudflareUrl" -ForegroundColor White -BackgroundColor DarkGreen
 Write-Host ("=" * 60) -ForegroundColor Green
 Write-Host ""
 
-# Update .env file with new URL
-$envPath = Join-Path $PSScriptRoot ".." ".env"
 if (Test-Path $envPath) {
     $envContent = Get-Content $envPath -Raw
     if ($envContent -match "PUBLIC_URL=.*") {
-        $envContent = $envContent -replace "PUBLIC_URL=.*", "PUBLIC_URL=$ngrokUrl"
+        $envContent = $envContent -replace "PUBLIC_URL=.*", "PUBLIC_URL=$cloudflareUrl"
         Set-Content -Path $envPath -Value $envContent -NoNewline
-        Write-Host "Updated .env file with new URL" -ForegroundColor Green
     } else {
-        Add-Content -Path $envPath -Value "`nPUBLIC_URL=$ngrokUrl"
-        Write-Host "Added PUBLIC_URL to .env file" -ForegroundColor Green
+        Add-Content -Path $envPath -Value "`nPUBLIC_URL=$cloudflareUrl"
     }
-} else {
-    Write-Host ".env file not found, but that's okay" -ForegroundColor Yellow
+    Write-Host "Updated .env PUBLIC_URL" -ForegroundColor Green
 }
 
-# Copy URL to clipboard
-$ngrokUrl | Set-Clipboard
-Write-Host "URL copied to clipboard!" -ForegroundColor Cyan
-Write-Host ""
+$cloudflareUrl | Set-Clipboard
+Write-Host "URL copied to clipboard." -ForegroundColor Cyan
 
-# Display Twilio webhook URL
-$webhookUrl = "$ngrokUrl/voice"
-Write-Host "Twilio Webhook URL:" -ForegroundColor Cyan
+$webhookUrl = "$cloudflareUrl/voice"
+Write-Host ""
+Write-Host "Twilio webhook:" -ForegroundColor Cyan
 Write-Host "   $webhookUrl" -ForegroundColor White -BackgroundColor DarkBlue
 Write-Host ""
 
 # Auto-update Twilio webhook
-Write-Host "Auto-updating Twilio webhook..." -ForegroundColor Yellow
-
 $twilioSid = $env:TWILIO_ACCOUNT_SID
 $twilioToken = $env:TWILIO_AUTH_TOKEN
 $twilioPhone = $env:TWILIO_PHONE_NUMBER
 
 if ($twilioSid -and $twilioToken -and $twilioPhone) {
     try {
-        # Get phone number SID (need to look it up first)
         $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${twilioSid}:${twilioToken}"))
-        $headers = @{
-            Authorization = "Basic $auth"
-        }
-        
-        # Get the phone number SID
+        $headers = @{ Authorization = "Basic $auth" }
         $phoneList = Invoke-RestMethod -Uri "https://api.twilio.com/2010-04-01/Accounts/$twilioSid/IncomingPhoneNumbers.json?PhoneNumber=$twilioPhone" -Headers $headers
         $phoneSid = $phoneList.incoming_phone_numbers[0].sid
-        
         if ($phoneSid) {
-            # Update webhook
             $formBody = "VoiceUrl=$([System.Web.HttpUtility]::UrlEncode($webhookUrl))&VoiceMethod=POST"
-            $response = Invoke-RestMethod -Uri "https://api.twilio.com/2010-04-01/Accounts/$twilioSid/IncomingPhoneNumbers/$phoneSid.json" `
-                -Method POST `
-                -Headers $headers `
-                -Body $formBody
-            
-            Write-Host "SUCCESS! Twilio webhook updated automatically!" -ForegroundColor Green
-            Write-Host "You can call your number right now!" -ForegroundColor Green
+            Invoke-RestMethod -Uri "https://api.twilio.com/2010-04-01/Accounts/$twilioSid/IncomingPhoneNumbers/$phoneSid.json" -Method POST -Headers $headers -Body $formBody | Out-Null
+            Write-Host "Twilio webhook updated. You can call your number now!" -ForegroundColor Green
         } else {
-            Write-Host "Could not find phone number. Manual update needed:" -ForegroundColor Yellow
-            Write-Host "   1. Go to: https://console.twilio.com/us1/develop/phone-numbers/manage/incoming" -ForegroundColor Gray
-            Write-Host "   2. Click your phone number" -ForegroundColor Gray
-            Write-Host "   3. Set Voice webhook to: $webhookUrl" -ForegroundColor Gray
+            Write-Host "Set Voice webhook manually to: $webhookUrl" -ForegroundColor Yellow
         }
     } catch {
-        Write-Host "Auto-update failed (that's okay):" -ForegroundColor Yellow
-        Write-Host $_.Exception.Message -ForegroundColor Gray
-        Write-Host ""
-        Write-Host "Manual update:" -ForegroundColor Yellow
-        Write-Host "   1. Go to: https://console.twilio.com/us1/develop/phone-numbers/manage/incoming" -ForegroundColor Gray
-        Write-Host "   2. Click your phone number" -ForegroundColor Gray
-        Write-Host "   3. Set Voice webhook to: $webhookUrl" -ForegroundColor Gray
+        Write-Host "Twilio auto-update failed. Set Voice webhook to: $webhookUrl" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "Twilio credentials not in environment. Manual update:" -ForegroundColor Yellow
-    Write-Host "   1. Go to: https://console.twilio.com/us1/develop/phone-numbers/manage/incoming" -ForegroundColor Gray
-    Write-Host "   2. Click your phone number" -ForegroundColor Gray
-    Write-Host "   3. Set Voice webhook to: $webhookUrl" -ForegroundColor Gray
+    Write-Host "Set Twilio Voice webhook to: $webhookUrl" -ForegroundColor Yellow
 }
+
+Write-Host ""
+Write-Host "Phone server: other window. Tunnel: this window." -ForegroundColor Gray
+Write-Host "Ctrl+C stops tunnel (server keeps running)." -ForegroundColor Yellow
 Write-Host ""
 
-# Start the phone server
-Write-Host "Starting phone server..." -ForegroundColor Yellow
-Write-Host ""
-
-Set-Location $PSScriptRoot
-node phone_server.js
+Wait-Process -Id $cloudflaredProcess.Id -ErrorAction SilentlyContinue

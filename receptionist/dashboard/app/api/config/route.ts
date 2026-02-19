@@ -14,7 +14,7 @@ export async function GET() {
 
     const { data, error } = await supabase
       .from('business_profiles')
-      .select('business_name, bot_config, twilio_phone_number, calendar_id, updated_at')
+      .select('business_name, bot_config, twilio_phone_number, calendar_id, owner_phone, updated_at')
       .eq('user_id', user.id)
       .eq('is_active', true)
       .limit(1)
@@ -40,9 +40,10 @@ export async function GET() {
       },
       twilio_phone_number: data.twilio_phone_number ?? null,
       calendar_id: data.calendar_id ?? (botConfig?.google_calendar_id as string) ?? null,
+      owner_phone: data.owner_phone ?? null,
       saved_at: data.updated_at ?? null,
     }
-    console.log('[API config GET] returning profile', { business_name: data.business_name, twilio_phone_number: data.twilio_phone_number, calendar_id: data.calendar_id })
+    console.log('[API config GET] returning profile', { business_name: data.business_name, twilio_phone_number: data.twilio_phone_number, owner_phone: data.owner_phone, calendar_id: data.calendar_id })
     return NextResponse.json(payload)
   } catch (error: unknown) {
     return NextResponse.json({ error: (error as Error).message }, { status: 500 })
@@ -59,7 +60,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { businessName, tone, customKnowledge, requiredLeadInfo, twilio_phone_number, calendar_id } = body
+    const { businessName, tone, customKnowledge, requiredLeadInfo, twilio_phone_number, calendar_id, owner_phone } = body
 
     const botConfig = {
       tone: tone || 'professional',
@@ -84,6 +85,7 @@ export async function POST(request: NextRequest) {
           bot_config: botConfig,
           twilio_phone_number: twilio_phone_number ?? null,
           calendar_id: calendar_id ?? null,
+          owner_phone: owner_phone ?? null,
           updated_at: new Date().toISOString(),
         })
         .eq('id', existing.id)
@@ -98,6 +100,7 @@ export async function POST(request: NextRequest) {
           bot_config: botConfig,
           twilio_phone_number: twilio_phone_number ?? null,
           calendar_id: calendar_id ?? null,
+          owner_phone: owner_phone ?? null,
           is_active: true,
         })
 

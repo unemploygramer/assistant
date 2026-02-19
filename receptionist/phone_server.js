@@ -1,14 +1,20 @@
 // phone_server.js - Production-Ready AI Phone Receptionist with Supabase
-// Load .env from parent directory (root) where package.json is
+// Load .env from parent directory (Baddie Assistant/.env) - NOT dashboard .env.local
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+const envPath = path.join(__dirname, '..', '.env');
+require('dotenv').config({ path: envPath });
+if (require.main === module) {
+  console.log(`📁 [ENV] Loading from: ${envPath}`);
+}
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const VoiceResponse = require('twilio').twiml.VoiceResponse;
 const twilio = require('twilio');
 const nodemailer = require('nodemailer');
-const { upsertSession, getSession, deleteSession, saveLead, logNotification, updateNotification } = require('./lib/db');
+const { upsertSession, getSession, deleteSession, saveLead, logNotification, updateNotification, getBotConfig } = require('./lib/db');
+const { buildSystemPrompt } = require('./lib/prompt-builder');
+const calendarService = require('./services/calendarService');
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -84,6 +90,57 @@ if (openRouterKey) {
   process.exit(1);
 }
 
+// Calendar tools for OpenAI/OpenRouter (check availability, book appointment)
+const CALENDAR_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'check_availability',
+      description: 'Check if a time slot is available on the business calendar. Always use this before booking when a caller wants an appointment.',
+      parameters: {
+        type: 'object',
+        properties: {
+          calendarId: { type: 'string', description: 'Google Calendar ID (e.g. business email)' },
+          startTime: { type: 'string', description: 'Start of slot in ISO 8601 format (e.g. 2025-02-20T14:00:00)' },
+          endTime: { type: 'string', description: 'End of slot in ISO 8601 format' }
+        },
+        required: ['calendarId', 'startTime', 'endTime']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'book_appointment',
+      description: 'Book an appointment on the business calendar. Only call after checking availability and confirming with the caller.',
+      parameters: {
+        type: 'object',
+        properties: {
+          calendarId: { type: 'string', description: 'Google Calendar ID' },
+          summary: { type: 'string', description: 'Event title (e.g. "Service call - John Smith")' },
+          startTime: { type: 'string', description: 'Start in ISO 8601 format' },
+          endTime: { type: 'string', description: 'End in ISO 8601 format' }
+        },
+        required: ['calendarId', 'summary', 'startTime', 'endTime']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'end_call',
+      description: 'Call this when you have collected all required information and are ready to end the conversation. After calling this, say your final closing message to the caller, then the call will end.',
+      parameters: {
+        type: 'object',
+        properties: {
+          reason: { type: 'string', description: 'Why you are ending the call (e.g. "collected all required information", "appointment booked successfully")' }
+        },
+        required: ['reason']
+      }
+    }
+  }
+];
+
 // HARDCODED PROFESSIONAL SYSTEM PROMPT (Residential Service Receptionist)
 const PROFESSIONAL_SYSTEM_PROMPT = `You are a professional phone receptionist for a residential service business (plumbing, HVAC, electrical, etc.). Your job is to have a natural, conversational conversation with callers to collect lead information.
 
@@ -96,6 +153,12 @@ CRITICAL RULES:
 - Follow up on what they say with relevant questions
 - Be friendly, professional, and empathetic
 - Your goal is to qualify leads and collect contact info
+
+CALENDAR: You have access to the business owner's calendar. If a caller wants to book an appointment, ALWAYS check availability first using check_availability. If the slot is free, confirm with the caller before booking it with book_appointment.
+
+Current date and time: {{current_datetime}}
+
+PHONE NUMBER: Accept however they say it. Clarify back naturally (e.g. "So 555-123-4567?") - never say "plus" or demand format.
 
 COLLECT THIS INFORMATION (one at a time):
 1. Their name
@@ -115,7 +178,7 @@ You: "Thanks! What's the best number to reach you?"
 You: "Perfect. Just to make sure I understand - [ask follow-up about their specific need]?"
 [Continue conversation naturally]
 
-Once you have all the information, briefly confirm it back and let them know someone will contact them soon. Keep it conversational, not scripted.`;
+When you have collected ALL the required information and are ready to end the conversation, call the end_call tool. After calling end_call, say your final closing message to the caller (e.g. "Perfect! I've got all your information. Someone will call you back soon. Thanks for calling!") and the call will end.`;
 
 // Helper: Generate ElevenLabs audio and return URL (with resilience)
 async function generateElevenLabsAudio(text) {
@@ -177,26 +240,199 @@ async function generateElevenLabsAudio(text) {
   }
 }
 
+// Default calendar when none set in business profile or env
+const DEFAULT_CALENDAR_ID = process.env.CALENDAR_ID || 'codedbytyler@gmail.com';
+
 // Helper: Get AI response with resilience (call stays live on failure)
-async function getAIResponse(messages, callSid) {
+async function getAIResponse(messages, callSid, twilioToNumber = null) {
   console.log(`🤖 [AI] Getting response for call ${callSid}`);
   console.log(`   Messages in context: ${messages.length}`);
-  
-  try {
-    console.log(`📡 [AI] Calling OpenRouter API (model: openai/gpt-4o)...`);
-    const completion = await openai.chat.completions.create({
-      messages: [
-        { role: "system", content: PROFESSIONAL_SYSTEM_PROMPT },
-        ...messages
-      ],
-      model: "openai/gpt-4o",
-      temperature: 0.7,
-      timeout: 15000 // 15 second timeout
-    });
 
-    const response = completion.choices[0].message.content;
-    console.log(`✅ [AI] Got response (${response.length} chars)`);
-    return response;
+  // Fetch bot config and resolve calendar ID from business_profiles (twilio number -> google_calendar_id)
+  let systemPrompt = PROFESSIONAL_SYSTEM_PROMPT;
+  let calendarId = DEFAULT_CALENDAR_ID;
+  let businessName = null;
+  try {
+    const botConfig = await getBotConfig(twilioToNumber);
+    if (botConfig && botConfig.businessName) {
+      businessName = botConfig.businessName;
+      systemPrompt = buildSystemPrompt(botConfig, false);
+      console.log(`📋 [AI] Using dashboard config for: ${businessName}`);
+      if (botConfig.google_calendar_id) {
+        calendarId = botConfig.google_calendar_id;
+        console.log(`📅 [AI] Using calendar: ${calendarId}`);
+      } else {
+        console.log(`⚠️ [AI] No calendar ID in config, using default: ${calendarId}`);
+      }
+    } else {
+      console.log(`📋 [AI] No dashboard config found for ${twilioToNumber}, using default prompt`);
+    }
+  } catch (err) {
+    console.error(`⚠️ [AI] Failed to fetch bot config:`, err.message);
+  }
+
+  // Inject current date/time and calendar ID into system prompt
+  const currentDatetime = new Date().toISOString();
+  systemPrompt = systemPrompt.replace(/\{\{current_datetime\}\}/g, currentDatetime);
+  systemPrompt += `\n\nUse this calendar ID for check_availability and book_appointment: ${calendarId}.`;
+
+  const fullMessages = [
+    { role: 'system', content: systemPrompt },
+    ...messages
+  ];
+
+  let endCallRequested = false; // Track if AI called end_call tool
+
+  try {
+    let completion;
+    let round = 0;
+    const maxToolRounds = 5;
+
+    do {
+      round++;
+      console.log(`📡 [AI] Calling OpenRouter API (model: openai/gpt-4o)${round > 1 ? ` round ${round}` : ''}...`);
+      completion = await openai.chat.completions.create({
+        messages: fullMessages,
+        model: 'openai/gpt-4o',
+        temperature: 0.7,
+        timeout: 20000,
+        tools: CALENDAR_TOOLS,
+        tool_choice: 'auto'
+      });
+
+      const msg = completion.choices[0].message;
+      if (!msg.tool_calls || msg.tool_calls.length === 0) {
+        const response = msg.content || '';
+        console.log(`✅ [AI] Got response (${response.length} chars), endCallRequested: ${endCallRequested}`);
+        // Return object with response and end flag
+        return { response, shouldEndCall: endCallRequested };
+      }
+
+      // Append assistant message with tool calls
+      fullMessages.push({
+        role: 'assistant',
+        content: msg.content || null,
+        tool_calls: msg.tool_calls
+      });
+
+      // Execute each tool call and append results
+      for (const tc of msg.tool_calls) {
+        const fnName = tc.function.name;
+        let args;
+        try {
+          args = typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function.arguments;
+        } catch (e) {
+          fullMessages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ error: 'Invalid arguments' }) });
+          continue;
+        }
+        let result;
+        try {
+          // Ensure calendar ID is set (use resolved one if AI didn't provide it)
+          const resolvedCalendarId = args.calendarId || calendarId || DEFAULT_CALENDAR_ID;
+          if (!args.calendarId && calendarId) {
+            console.log(`📅 [TOOL] Injecting calendar ID: ${calendarId} (AI didn't provide one)`);
+          }
+          
+          if (fnName === 'check_availability') {
+            result = await calendarService.check_availability(resolvedCalendarId, args.startTime, args.endTime);
+            console.log(`📅 [TOOL] check_availability(${resolvedCalendarId}): ${result.available ? 'available' : 'busy'}`);
+          } else if (fnName === 'book_appointment') {
+            result = await calendarService.book_appointment(resolvedCalendarId, args.summary, args.startTime, args.endTime);
+            console.log(`📅 [TOOL] book_appointment(${resolvedCalendarId}): ${result.success ? 'ok' : result.error || 'failed'}`);
+            
+            // Send immediate email notification after successful booking
+            if (result.success) {
+              console.log(`📧 [TOOL] Sending immediate email notification for appointment booking...`);
+              try {
+                const session = await getSession(callSid);
+                console.log(`📧 [TOOL] getSession: ${session ? 'ok' : 'null'}, metadata: ${session?.metadata ? 'yes' : 'no'}`);
+                if (session && session.metadata) {
+                  const bookingDetails = {
+                    customerName: null,
+                    phoneNumber: session.metadata.fromNumber || null,
+                    serviceNeeded: `Appointment booked: ${args.summary || 'Appointment'}`,
+                    urgency: 'medium',
+                    preferredCallback: args.startTime || null,
+                    address: null,
+                    appointmentSummary: args.summary,
+                    appointmentTime: args.startTime,
+                    appointmentEndTime: args.endTime
+                  };
+                  const userMessages = session.transcript_buffer?.filter(m => m.role === 'user') || [];
+                  if (userMessages.length > 0) {
+                    const nameMatch = session.transcript_buffer.find(m => 
+                      m.role === 'user' && (m.content.toLowerCase().includes('my name is') || m.content.toLowerCase().includes("i'm"))
+                    );
+                    if (nameMatch) {
+                      const namePart = nameMatch.content.split(/my name is|i'm|i am/i)[1]?.trim()?.split(/\s+/)[0];
+                      if (namePart && namePart.length > 1) bookingDetails.customerName = namePart;
+                    }
+                  }
+                  console.log(`📧 [TOOL] bookingDetails for email:`, JSON.stringify(bookingDetails, null, 2));
+                  const emailOk = await sendEmailNotification(bookingDetails, callSid);
+                  console.log(`📧 [TOOL] Immediate email result: ${emailOk ? 'sent' : 'failed'}`);
+
+                  // Immediate SMS for appointment booked (same recipient as call-ended SMS)
+                  const useSms = process.env.USE_TWILIO_SMS === 'true';
+                  console.log(`📱 [TOOL] USE_TWILIO_SMS=${JSON.stringify(process.env.USE_TWILIO_SMS)} → immediate SMS ${useSms ? 'enabled' : 'disabled'}`);
+                  if (useSms) {
+                    const twilioToNumber = session.metadata.twilioToNumber || null;
+                    let botConfig = null;
+                    try { botConfig = await getBotConfig(twilioToNumber); } catch (_) {}
+                    const toE164 = (num) => {
+                      if (!num || typeof num !== 'string') return null;
+                      const s = num.trim();
+                      const digits = s.replace(/\D/g, '');
+                      if (digits.length === 10) return `+1${digits}`;
+                      if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+                      return s.startsWith('+') ? s : (s ? `+${s}` : null);
+                    };
+                    const smsTo = toE164(botConfig?.owner_phone || process.env.MY_CELL_NUMBER) || null;
+                    const smsFrom = toE164(botConfig?.twilio_phone_number || twilioToNumber || process.env.TWILIO_PHONE_NUMBER) || null;
+                    console.log(`📱 [TOOL] SMS to=${smsTo ?? 'NULL'}, from=${smsFrom ?? 'NULL'}`);
+                    if (smsTo && smsFrom) {
+                      try {
+                        const smsBody = `📅 Appointment booked: ${args.summary || 'Appointment'} at ${args.startTime || 'TBD'}. Caller: ${session.metadata.fromNumber || 'N/A'}`;
+                        await twilioClient.messages.create({ body: smsBody, from: smsFrom, to: smsTo });
+                        console.log(`📱 [TOOL] Immediate SMS sent for appointment booking → ${smsTo}`);
+                      } catch (smsErr) {
+                        console.error(`⚠️ [TOOL] Immediate SMS failed:`, smsErr.message);
+                      }
+                    } else {
+                      console.log(`📱 [TOOL] SMS skipped: need owner_phone (Config) or MY_CELL_NUMBER, and Twilio number for from`);
+                    }
+                  }
+                } else {
+                  console.log(`⚠️ [TOOL] No session or metadata - skipping immediate email`);
+                }
+              } catch (emailErr) {
+                console.error(`⚠️ [TOOL] Failed to send immediate email after booking:`, emailErr.message);
+                console.error(`   Stack:`, emailErr.stack);
+              }
+            }
+          } else if (fnName === 'end_call') {
+            // AI has decided to end the call - mark it so we hang up after the AI's final response
+            console.log(`📞 [TOOL] end_call called: ${args.reason || 'conversation complete'}`);
+            endCallRequested = true;
+            result = { success: true, message: 'Call will end after your final message to the caller' };
+          } else {
+            result = { error: `Unknown tool: ${fnName}` };
+          }
+        } catch (toolErr) {
+          console.error(`❌ [TOOL] ${fnName} error:`, toolErr.message);
+          result = { error: toolErr.message };
+        }
+        fullMessages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: JSON.stringify(result)
+        });
+      }
+    } while (round < maxToolRounds);
+
+    // Fallback if we hit max rounds without a final text response
+    const lastContent = completion.choices[0].message.content;
+    return { response: lastContent || "I've checked the calendar. How would you like to proceed?", shouldEndCall: endCallRequested };
   } catch (error) {
     console.error(`❌ [AI] OpenRouter API error for ${callSid}:`, error.message);
     if (error.response) {
@@ -204,8 +440,7 @@ async function getAIResponse(messages, callSid) {
       console.error(`   Data:`, JSON.stringify(error.response.data));
     }
     console.error(`   Stack:`, error.stack);
-    // Return fallback message - call stays live
-    return "I've caught your details, but my system is lagging. A human will call you back shortly.";
+    return { response: "I've caught your details, but my system is lagging. A human will call you back shortly.", shouldEndCall: false };
   }
 }
 
@@ -276,13 +511,19 @@ CRITICAL RULES:
 
 // Helper: Send email notification with HTML template
 async function sendEmailNotification(callDetails, callSid) {
-  // Check if email is configured
+  console.log(`\n📧 [EMAIL] ========== sendEmailNotification ==========`);
+  console.log(`   callSid: ${callSid}`);
+  console.log(`   callDetails keys: ${Object.keys(callDetails || {}).join(', ')}`);
+  console.log(`   BUSINESS_OWNER_EMAIL: ${process.env.BUSINESS_OWNER_EMAIL ? `set (${process.env.BUSINESS_OWNER_EMAIL})` : '❌ NOT SET'}`);
+  console.log(`   EMAIL_APP_PASSWORD: ${process.env.EMAIL_APP_PASSWORD ? `set (${process.env.EMAIL_APP_PASSWORD.length} chars)` : '❌ NOT SET'}`);
+
   if (!process.env.BUSINESS_OWNER_EMAIL || !process.env.EMAIL_APP_PASSWORD) {
-    console.log(`⚠️ Email not configured - BUSINESS_OWNER_EMAIL or EMAIL_APP_PASSWORD missing`);
+    console.log(`⚠️ [EMAIL] Skipping - BUSINESS_OWNER_EMAIL or EMAIL_APP_PASSWORD missing in .env (use Baddie Assistant root .env, not dashboard .env.local)`);
     return false;
   }
 
   try {
+    console.log(`📧 [EMAIL] Building email for: ${process.env.BUSINESS_OWNER_EMAIL}`);
     const businessName = process.env.BUSINESS_NAME || 'Test Business';
     const phoneNumber = callDetails.phoneNumber || callDetails.phone || 'Not provided';
     const phoneLink = phoneNumber !== 'Not provided' ? phoneNumber.replace(/\D/g, '') : '';
@@ -426,31 +667,44 @@ async function sendEmailNotification(callDetails, callSid) {
     };
 
     // Send email
+    console.log(`📧 [EMAIL] Calling transporter.sendMail...`);
     const info = await transporter.sendMail(mailOptions);
-    console.log(`✅ Email notification sent successfully!`);
-    console.log(`   Message ID: ${info.messageId}`);
-    console.log(`   To: ${mailOptions.to}`);
-    console.log(`   Priority: ${mailOptions.priority}`);
+    console.log(`✅ [EMAIL] Sent successfully! Message ID: ${info.messageId}`);
     
     return true;
   } catch (error) {
-    console.error(`❌ Email notification failed:`, error.message);
+    console.error(`❌ [EMAIL] FAILED:`, error.message);
+    if (error.response) console.error(`   SMTP response:`, error.response);
+    if (error.code) console.error(`   Code: ${error.code}`);
+    if (error.responseCode) console.error(`   Response code: ${error.responseCode}`);
+    if (error.command) console.error(`   Command: ${error.command}`);
     console.error(`   Stack:`, error.stack);
     return false;
   }
 }
 
 // Helper: Log notification (with USE_TWILIO_SMS flag) - handles both SMS and Email
-async function logNotificationWithSMS(leadId, messageBody, callSid, callDetails) {
+// options: { smsToNumber, smsFromNumber } from business_profiles (owner_phone, twilio_phone_number) - overrides env
+async function logNotificationWithSMS(leadId, messageBody, callSid, callDetails, options = {}) {
+  console.log(`\n📬 [NOTIFY] ========== logNotificationWithSMS ==========`);
+  console.log(`   leadId: ${leadId}, callSid: ${callSid}`);
+  console.log(`   options.smsToNumber (owner): ${options.smsToNumber ?? '(not passed)'}`);
+  console.log(`   options.smsFromNumber (Twilio line): ${options.smsFromNumber ?? '(not passed)'}`);
+  console.log(`   callDetails keys: ${Object.keys(callDetails || {}).join(', ')}`);
+  console.log(`   BUSINESS_OWNER_EMAIL: ${process.env.BUSINESS_OWNER_EMAIL ? 'set' : 'NOT SET'}`);
+  console.log(`   EMAIL_APP_PASSWORD: ${process.env.EMAIL_APP_PASSWORD ? 'set' : 'NOT SET'}`);
+  console.log(`   USE_TWILIO_SMS: ${process.env.USE_TWILIO_SMS}`);
+  console.log(`   MY_CELL_NUMBER (env fallback): ${process.env.MY_CELL_NUMBER ? 'set' : 'NOT SET'}`);
+  console.log(`   TWILIO_PHONE_NUMBER (env fallback): ${process.env.TWILIO_PHONE_NUMBER ? 'set' : 'NOT SET'}`);
   const useTwilioSMS = process.env.USE_TWILIO_SMS === 'true';
-  
-  // Always send email notification (if configured)
+
   let emailSent = false;
   if (process.env.BUSINESS_OWNER_EMAIL && process.env.EMAIL_APP_PASSWORD) {
     try {
+      console.log(`📬 [NOTIFY] Calling sendEmailNotification(callDetails, callSid)...`);
       emailSent = await sendEmailNotification(callDetails, callSid);
+      console.log(`📬 [NOTIFY] Email result: ${emailSent ? 'SENT' : 'FAILED'}`);
       if (emailSent) {
-        // Log email notification to database
         await logNotification({
           leadId: leadId,
           messageBody: messageBody,
@@ -459,11 +713,26 @@ async function logNotificationWithSMS(leadId, messageBody, callSid, callDetails)
         });
       }
     } catch (error) {
-      console.error(`⚠️ Email send failed:`, error.message);
-      // Continue - email is non-critical
+      console.error(`⚠️ [NOTIFY] Email send threw:`, error.message);
+      console.error(`   Stack:`, error.stack);
     }
+  } else {
+    console.log(`📬 [NOTIFY] Email skipped - env not configured (need .env in Baddie Assistant root, not dashboard .env.local)`);
   }
-  
+
+  // Resolve SMS to/from: prefer DB (options), then env. Normalize to E.164 (e.g. 10 digits → +1xxxxxxxxxx).
+  function toE164(num) {
+    if (!num || typeof num !== 'string') return null;
+    const s = num.trim();
+    const digits = s.replace(/\D/g, '');
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+    return s.startsWith('+') ? s : (s ? `+${s}` : null);
+  }
+  const smsToNumber = toE164(options.smsToNumber || process.env.MY_CELL_NUMBER) || null;
+  const smsFromNumber = toE164(options.smsFromNumber || process.env.TWILIO_PHONE_NUMBER) || null;
+  console.log(`📬 [NOTIFY] SMS resolved (E.164): to=${smsToNumber ?? 'NULL'}, from=${smsFromNumber ?? 'NULL'}`);
+
   // Always log SMS notification to database first
   let notification = null;
   try {
@@ -473,51 +742,48 @@ async function logNotificationWithSMS(leadId, messageBody, callSid, callDetails)
       sentStatus: 'pending',
       notificationType: 'sms'
     });
-    console.log(`✅ SMS notification logged to database: ${notification.id}`);
+    console.log(`✅ [NOTIFY] SMS notification row created: id=${notification.id}`);
   } catch (error) {
-    console.error('❌ Failed to log SMS notification:', error.message);
-    // Continue anyway - non-critical
+    console.error('❌ [NOTIFY] Failed to log SMS notification:', error.message);
   }
 
   if (!useTwilioSMS) {
-    console.log(`📝 USE_TWILIO_SMS=false - SMS notification saved to database only`);
+    console.log(`📝 [NOTIFY] USE_TWILIO_SMS is not 'true' - SMS only logged to DB, not sent via Twilio`);
     if (notification) {
       try {
         await updateNotification(notification.id, { sentStatus: 'logged' });
-      } catch (error) {
-        console.error(`⚠️ Failed to update notification status (non-critical):`, error.message);
-        // Continue - this is non-critical
+      } catch (e) {
+        console.error(`⚠️ [NOTIFY] updateNotification (logged):`, e.message);
       }
     }
     return { logged: true, sent: false, emailSent };
   }
 
-  // Try to send SMS via Twilio
-  if (!process.env.MY_CELL_NUMBER || !process.env.TWILIO_PHONE_NUMBER) {
-    console.log(`⚠️ SMS not configured - notification logged to database`);
+  if (!smsToNumber || !smsFromNumber) {
+    console.log(`⚠️ [NOTIFY] SMS skip: need (owner_phone in Config or MY_CELL_NUMBER) and (Twilio number in profile or TWILIO_PHONE_NUMBER)`);
     if (notification) {
       try {
-        await updateNotification(notification.id, { 
+        await updateNotification(notification.id, {
           sentStatus: 'failed',
-          errorMessage: 'SMS not configured'
+          errorMessage: !smsToNumber ? 'No SMS to number (set owner_phone in Config or MY_CELL_NUMBER)' : 'No SMS from number (set Twilio number in Config or TWILIO_PHONE_NUMBER)'
         });
-      } catch (error) {
-        console.error(`⚠️ Failed to update notification status (non-critical):`, error.message);
-        // Continue - this is non-critical
+      } catch (e) {
+        console.error(`⚠️ [NOTIFY] updateNotification (failed):`, e.message);
       }
     }
     return { logged: true, sent: false, emailSent };
   }
 
+  console.log(`📱 [NOTIFY] About to call Twilio messages.create: from=${smsFromNumber}, to=${smsToNumber}, body length=${messageBody?.length ?? 0}`);
   try {
     const message = await twilioClient.messages.create({
       body: messageBody,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to: process.env.MY_CELL_NUMBER,
+      from: smsFromNumber,
+      to: smsToNumber,
       statusCallback: `${process.env.PUBLIC_URL || 'http://localhost:3001'}/sms-status`
     });
 
-    console.log(`✅ SMS sent: ${message.sid}`);
+    console.log(`✅ [NOTIFY] Twilio SMS sent successfully. message.sid=${message.sid}`);
     
     if (notification) {
       try {
@@ -533,8 +799,11 @@ async function logNotificationWithSMS(leadId, messageBody, callSid, callDetails)
 
     return { logged: true, sent: true, messageSid: message.sid, emailSent };
   } catch (error) {
-    console.error(`❌ SMS send failed:`, error.message);
-    
+    console.error(`❌ [NOTIFY] Twilio SMS send failed:`, error.message);
+    console.error(`   code: ${error.code ?? 'n/a'}, status: ${error.status ?? 'n/a'}`);
+    console.error(`   more: ${error.moreInfo ?? ''}`);
+    if (error.stack) console.error(`   stack:`, error.stack);
+
     if (notification) {
       try {
         await updateNotification(notification.id, {
@@ -542,8 +811,7 @@ async function logNotificationWithSMS(leadId, messageBody, callSid, callDetails)
           errorMessage: error.message
         });
       } catch (updateError) {
-        console.error(`⚠️ Failed to update notification status (non-critical):`, updateError.message);
-        // Continue - notification was already logged
+        console.error(`⚠️ [NOTIFY] updateNotification (failed):`, updateError.message);
       }
     }
 
@@ -559,7 +827,8 @@ app.post('/voice', async (req, res) => {
   console.log(`   Request Body:`, JSON.stringify(req.body, null, 2));
   
   const callSid = req.body.CallSid;
-  const fromNumber = req.body.From;
+  const fromNumber = req.body.From;   // Caller (stored in leads.phone)
+  const twilioToNumber = req.body.To; // Number they dialed = your Twilio/business line (stored in leads.from_number → links to dashboard owner)
   
   if (!callSid) {
     console.error(`❌ [VOICE] NO CALL SID IN REQUEST!`);
@@ -570,6 +839,28 @@ app.post('/voice', async (req, res) => {
   
   console.log(`📞 [VOICE] Call SID: ${callSid}`);
   console.log(`📞 [VOICE] From: ${fromNumber}`);
+  console.log(`📞 [VOICE] To (dialed number): ${twilioToNumber}`);
+  
+  // Identify which business this call is for
+  let businessName = 'Unknown Business';
+  let calendarId = null;
+  try {
+    const botConfig = await getBotConfig(twilioToNumber);
+    if (botConfig && botConfig.businessName) {
+      businessName = botConfig.businessName;
+      calendarId = botConfig.google_calendar_id || null;
+      console.log(`📞 Call for [${businessName}] incoming`);
+      if (calendarId) {
+        console.log(`📅 Calendar ID: ${calendarId}`);
+      } else {
+        console.log(`⚠️ No calendar ID configured for this business`);
+      }
+    } else {
+      console.log(`⚠️ No business profile found for number ${twilioToNumber} - using defaults`);
+    }
+  } catch (err) {
+    console.error(`⚠️ [VOICE] Failed to identify business:`, err.message);
+  }
 
   // Try to recover session if server restarted
   let session = null;
@@ -586,9 +877,10 @@ app.post('/voice', async (req, res) => {
     console.error(`   Stack:`, error.stack);
   }
 
-  // Initialize or restore session
+  // Initialize or restore session (always include twilioToNumber for config lookup)
   const messages = session ? session.transcript_buffer : [];
-  const metadata = session ? session.metadata : { fromNumber, startTime: new Date().toISOString() };
+  const baseMetadata = session ? session.metadata : { fromNumber, startTime: new Date().toISOString() };
+  const metadata = { ...baseMetadata, twilioToNumber, businessName, calendarId };
   console.log(`📝 [VOICE] Session state: ${messages.length} messages, metadata:`, JSON.stringify(metadata));
 
   // Save initial session
@@ -602,9 +894,17 @@ app.post('/voice', async (req, res) => {
     // Continue anyway - non-critical
   }
 
+  // Business name already identified above, use it for greeting
+
   console.log(`🎙️ [VOICE] Generating greeting...`);
   const twiml = new VoiceResponse();
-  const greeting = "Thank you for calling. How can I assist you today?";
+  
+  // Configure status callback so we get notified when call ends (for email notification)
+  // Note: This should also be set in Twilio webhook settings, but adding here as backup
+  const statusCallbackUrl = `${process.env.PUBLIC_URL || 'http://localhost:3001'}/call-ended`;
+  console.log(`📞 [VOICE] Status callback URL: ${statusCallbackUrl}`);
+  
+  const greeting = `Thank you for calling ${businessName}. How can I assist you today?`;
   
   // Try ElevenLabs, fallback to Twilio TTS (resilient)
   if (process.env.PUBLIC_URL) {
@@ -631,7 +931,10 @@ app.post('/voice', async (req, res) => {
     action: '/gather',
     speechTimeout: 'auto',
     language: 'en-US',
-    method: 'POST'
+    method: 'POST',
+    // Add status callback to gather (fires when gather completes or call ends)
+    statusCallback: statusCallbackUrl,
+    statusCallbackEvent: ['completed']
   });
   
   // If no speech detected, redirect back
@@ -697,6 +1000,16 @@ app.post('/gather', async (req, res) => {
 
   let messages = session.transcript_buffer || [];
   console.log(`📝 [GATHER] Current transcript: ${messages.length} messages`);
+  
+  // Log business identity from session metadata
+  const sessionBusinessName = session?.metadata?.businessName || 'Unknown Business';
+  const sessionCalendarId = session?.metadata?.calendarId || null;
+  if (sessionBusinessName !== 'Unknown Business') {
+    console.log(`📞 Handling call for [${sessionBusinessName}]`);
+    if (sessionCalendarId) {
+      console.log(`📅 Calendar ID: ${sessionCalendarId}`);
+    }
+  }
 
   if (userSpeech) {
     console.log(`\n💬 [GATHER] CALLER SAID: "${userSpeech}"`);
@@ -716,18 +1029,22 @@ app.post('/gather', async (req, res) => {
       // Continue anyway - non-critical
     }
 
-    // Get AI response (with resilience)
-    let aiResponse = null;
+    // Get AI response (with resilience) - now returns { response, shouldEndCall }
+    let aiResult = null;
     try {
       console.log(`🤖 [GATHER] Calling OpenRouter API...`);
-      aiResponse = await getAIResponse(messages, callSid);
-      console.log(`✅ [GATHER] AI RESPONSE: "${aiResponse}"`);
+      aiResult = await getAIResponse(messages, callSid, req.body.To || session?.metadata?.twilioToNumber);
+      console.log(`✅ [GATHER] AI RESPONSE: "${aiResult.response}"`);
+      console.log(`📞 [GATHER] Should end call: ${aiResult.shouldEndCall}`);
     } catch (error) {
       console.error(`❌ [GATHER] AI error:`, error.message);
       console.error(`   Stack:`, error.stack);
-      aiResponse = "I've caught your details, but my system is lagging. A human will call you back shortly.";
+      aiResult = { response: "I've caught your details, but my system is lagging. A human will call you back shortly.", shouldEndCall: false };
       console.log(`🔄 [GATHER] Using fallback message`);
     }
+
+    const aiResponse = aiResult.response;
+    const shouldEndCall = aiResult.shouldEndCall || false;
 
     // Add AI response
     messages.push({ role: 'assistant', content: aiResponse });
@@ -763,23 +1080,25 @@ app.post('/gather', async (req, res) => {
       twiml.say({ voice: 'Polly.Joanna-Neural' }, aiResponse);
     }
 
-    // Check if conversation is complete
-    const isComplete = aiResponse.toLowerCase().includes('thank you') || 
-                       aiResponse.toLowerCase().includes('goodbye') ||
-                       aiResponse.toLowerCase().includes('have a great day');
-    
-    if (isComplete) {
-      console.log(`✅ [GATHER] Conversation complete - ending call`);
+    // AI decides when to end via end_call tool - no phrase detection
+    if (shouldEndCall) {
+      console.log(`📴 END CALL INITIATED BY BOT (end_call tool) — CallSid: ${callSid}`);
       twiml.hangup();
       
       // Process lead asynchronously (don't block call end)
-      console.log(`⏰ [GATHER] Scheduling call completion processing...`);
+      console.log(`⏰ [GATHER] Scheduling call completion in 1s (lead save + email)... callSid=${callSid}`);
       setTimeout(async () => {
-        await processCallCompletion(callSid);
+        try {
+          console.log(`⏰ [GATHER] Running processCallCompletion now for ${callSid}`);
+          await processCallCompletion(callSid);
+        } catch (err) {
+          console.error(`❌ [GATHER] Error in processCallCompletion:`, err.message);
+          console.error(`   Stack:`, err.stack);
+        }
       }, 1000);
     } else {
       // Continue conversation
-      console.log(`👂 [GATHER] Setting up next speech gather...`);
+      console.log(`👂 [GATHER] Setting up next speech gather`);
       const gather = twiml.gather({
         input: 'speech',
         action: '/gather',
@@ -805,72 +1124,103 @@ app.post('/gather', async (req, res) => {
 
 // 3. CALL ENDED -> Process lead (fetch from sessions, generate summary, save to leads)
 app.post('/call-ended', async (req, res) => {
-  console.log(`\n${'='.repeat(60)}`);
-  console.log(`📞 [CALL-ENDED] CALL COMPLETION REQUEST`);
-  console.log(`   Timestamp: ${new Date().toISOString()}`);
-  console.log(`   Request Body:`, JSON.stringify(req.body, null, 2));
-  
   const callSid = req.body.CallSid;
-  console.log(`📞 [CALL-ENDED] Call SID: ${callSid}`);
-  
+  const callStatus = req.body.CallStatus || 'unknown';
+  const statusCallbackTo = req.body.To || null;
+  const statusCallbackFrom = req.body.From || null;
+
+  // One clear line: dropped vs completed (Twilio: completed = call ended normally; canceled/failed/no-answer = dropped/failed)
+  const isDropped = ['canceled', 'failed', 'no-answer', 'busy'].includes(callStatus);
+  const endType = isDropped ? 'DROPPED/FAILED' : 'ENDED (completed)';
+  console.log(`\n🛑 CALL ENDED — CallSid: ${callSid || 'MISSING'} | CallStatus: ${callStatus} (${endType}) | To: ${statusCallbackTo} | From: ${statusCallbackFrom}`);
+  console.log(`   (If you never see this when caller hangs up, set Twilio phone number → Voice → Status callback URL → ${process.env.PUBLIC_URL || 'http://localhost:3001'}/call-ended)`);
+
   if (!callSid) {
-    console.error(`❌ [CALL-ENDED] NO CALL SID IN REQUEST!`);
+    console.error(`❌ [CALL-ENDED] NO CALL SID — cannot process`);
     res.sendStatus(400);
     return;
   }
-  
-  // Process asynchronously (don't block response)
-  console.log(`⏰ [CALL-ENDED] Processing call completion asynchronously...`);
-  processCallCompletion(callSid).catch(err => {
-    console.error(`❌ [CALL-ENDED] Error processing call completion:`, err.message);
+
+  console.log(`⏰ [CALL-ENDED] Running processCallCompletion (lead + email/SMS)...`);
+  processCallCompletion(callSid, { statusCallbackTo, statusCallbackFrom }).catch(err => {
+    console.error(`❌ [CALL-ENDED] processCallCompletion failed:`, err.message);
     console.error(`   Stack:`, err.stack);
   });
 
-  console.log(`✅ [CALL-ENDED] Response sent (processing continues in background)`);
-  console.log(`${'='.repeat(60)}\n`);
   res.sendStatus(200);
 });
 
 // Process call completion: Fetch transcript, generate summary, save lead, send notification
-async function processCallCompletion(callSid) {
+// statusCallback: optional { statusCallbackTo, statusCallbackFrom } from Twilio so we always have the business line for lead ownership
+async function processCallCompletion(callSid, statusCallback = {}) {
   try {
-    console.log(`\n📋 Processing call completion for ${callSid}...`);
+    console.log(`📋 [CALL-COMPLETE] Starting: lead + email/SMS for callSid=${callSid}`);
 
-    // Fetch final transcript from sessions
     const session = await getSession(callSid);
-    if (!session || !session.transcript_buffer || session.transcript_buffer.length === 0) {
-      console.error(`❌ No transcript found for ${callSid}`);
+    if (!session) {
+      console.error(`❌ [CALL-COMPLETE] Skipped: no session for ${callSid} — cannot save lead or send email`);
+      return;
+    }
+    if (!session.transcript_buffer || session.transcript_buffer.length === 0) {
+      console.error(`❌ [CALL-COMPLETE] Skipped: empty transcript for ${callSid}`);
       return;
     }
 
     const messages = session.transcript_buffer;
     const metadata = session.metadata || {};
-    const fromNumber = metadata.fromNumber || null;
+    // Business line = number that RECEIVED the call (your Twilio number). This is what links the lead to the dashboard user.
+    const twilioToNumber = metadata.twilioToNumber || statusCallback.statusCallbackTo || null;
+    // Caller = person who called in (or callback number they gave). Stored in leads.phone.
+    const fromNumber = metadata.fromNumber || statusCallback.statusCallbackFrom || null;
 
-    console.log(`📝 Transcript has ${messages.length} messages`);
+    console.log(`📋 [CALL-COMPLETE] Session ok. messages=${messages.length}, caller=${fromNumber}, business line=${twilioToNumber}`);
+
+    // Get business config from dashboard (name, owner_phone for SMS, twilio_phone_number for SMS from)
+    let businessName = process.env.BUSINESS_NAME || 'Test Business';
+    let botConfig = null;
+    try {
+      botConfig = await getBotConfig(twilioToNumber);
+      console.log(`📋 [CALL-COMPLETE] getBotConfig result: businessName=${botConfig?.businessName ?? 'n/a'}, owner_phone=${botConfig?.owner_phone ?? 'n/a'}, twilio_phone_number=${botConfig?.twilio_phone_number ?? 'n/a'}`);
+      if (botConfig && botConfig.businessName) {
+        businessName = botConfig.businessName;
+        console.log(`📋 Using business name from dashboard: ${businessName}`);
+      }
+    } catch (err) {
+      console.error(`⚠️ [CALL-COMPLETE] getBotConfig failed:`, err.message);
+    }
 
     // Generate summary using GPT-4o
+    console.log(`📋 [CALL-COMPLETE] Generating summary...`);
     const summary = await generateSummary(messages);
-    console.log(`✅ Summary generated:`, JSON.stringify(summary, null, 2));
+    console.log(`📋 [CALL-COMPLETE] Summary:`, JSON.stringify(summary, null, 2));
 
     // Build transcript text
     const transcriptText = messages.map(m => `${m.role}: ${m.content}`).join('\n');
 
     // Save to leads table
-    const lead = await saveLead({
+    // CRITICAL: leads.from_number = business line (number that RECEIVED the call). Dashboard joins leads.from_number = business_profiles.twilio_phone_number so the right user sees the lead.
+    // leads.phone = caller/callback number (who called in or number they gave to call back).
+    if (!twilioToNumber) {
+      console.error(`❌ [CALL-COMPLETE] No business line (twilioToNumber) - cannot link lead to owner. Skipping lead save. Set Status Callback URL in Twilio so we get To/From.`);
+      return;
+    }
+    const businessLineForLead = twilioToNumber;
+    console.log(`📋 [CALL-COMPLETE] Saving lead... (caller/callback: ${fromNumber}, business line for ownership: ${businessLineForLead})`);
+    const leadPayload = {
       phone: summary.phoneNumber || fromNumber,
       transcript: transcriptText,
       summary: summary,
       status: 'new',
       industry: process.env.BUSINESS_TYPE || process.env.BUSINESS_NAME || 'Residential Services',
       callSid: callSid,
-      fromNumber: fromNumber
-    });
+      fromNumber: businessLineForLead
+    };
+    console.log(`📋 [CALL-COMPLETE] saveLead payload:`, JSON.stringify({ ...leadPayload, transcript: '(omitted)' }, null, 2));
+    const lead = await saveLead(leadPayload);
 
-    console.log(`✅ Lead saved: ${lead.id}`);
+    console.log(`📋 [CALL-COMPLETE] Lead saved: id=${lead.id}, from_number=${businessLineForLead} (links to business_profiles.twilio_phone_number → dashboard owner)`);
 
-    // Build notification message
-    const businessName = process.env.BUSINESS_NAME || 'Test Business';
+    // Build notification message (businessName from dashboard config above)
     let messageBody = `🔥 NEW LEAD - ${businessName}\n\n`;
     
     if (summary.customerName) messageBody += `👤 ${summary.customerName}\n`;
@@ -887,8 +1237,14 @@ async function processCallCompletion(callSid) {
     messageBody += `🕐 ${new Date().toLocaleString()}\n`;
     messageBody += `📞 Call SID: ${callSid}\n`;
 
-    // Send email and log SMS notification (with USE_TWILIO_SMS flag)
-    await logNotificationWithSMS(lead.id, messageBody, callSid, summary);
+    // Send email and SMS (SMS uses owner_phone from Config; from = business Twilio number)
+    const smsOptions = {
+      smsToNumber: botConfig?.owner_phone || null,
+      smsFromNumber: botConfig?.twilio_phone_number || twilioToNumber || null
+    };
+    console.log(`📋 [CALL-COMPLETE] Sending notifications. SMS options:`, smsOptions);
+    await logNotificationWithSMS(lead.id, messageBody, callSid, summary, smsOptions);
+    console.log(`📋 [CALL-COMPLETE] Done. Lead id=${lead.id}, from_number=${businessLineForLead}`);
 
     // Delete session (cleanup)
     await deleteSession(callSid);
@@ -922,7 +1278,10 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     supabase: !!process.env.SUPABASE_URL,
     openrouter: !!openRouterKey,
-    twilio: !!process.env.TWILIO_ACCOUNT_SID
+    twilio: !!process.env.TWILIO_ACCOUNT_SID,
+    emailConfigured: !!(process.env.BUSINESS_OWNER_EMAIL && process.env.EMAIL_APP_PASSWORD),
+    businessOwnerEmail: process.env.BUSINESS_OWNER_EMAIL ? 'set' : 'missing',
+    emailAppPassword: process.env.EMAIL_APP_PASSWORD ? 'set' : 'missing'
   });
 });
 
@@ -936,6 +1295,24 @@ app.get('/test', (req, res) => {
     timestamp: new Date().toISOString(),
     publicUrl: process.env.PUBLIC_URL,
     serverPort: process.env.PHONE_SERVER_PORT || 3001
+  });
+});
+
+// TEST EMAIL - Verify email config works without making a call
+app.get('/test-email', async (req, res) => {
+  console.log(`\n🧪 [TEST-EMAIL] Test email requested`);
+  const result = await sendEmailNotification({
+    customerName: 'Test User',
+    phoneNumber: '+15551234567',
+    serviceNeeded: 'Test from /test-email endpoint',
+    urgency: 'low',
+    preferredCallback: null,
+    address: null
+  }, 'test-call-sid');
+  res.json({ 
+    success: result,
+    message: result ? 'Test email sent! Check your inbox.' : 'Email failed. Check server console for details.',
+    emailConfigured: !!(process.env.BUSINESS_OWNER_EMAIL && process.env.EMAIL_APP_PASSWORD)
   });
 });
 
@@ -960,10 +1337,13 @@ if (require.main === module) {
     console.log(`✅ Twilio: ${process.env.TWILIO_ACCOUNT_SID ? 'Configured' : '❌ MISSING'}`);
     console.log(`✅ ElevenLabs: ${process.env.ELEVENLABS_KEY ? 'Configured' : '⚠️  Optional'}`);
     console.log(`📱 USE_TWILIO_SMS: ${process.env.USE_TWILIO_SMS === 'true' ? 'Enabled' : 'Disabled (logging only)'}`);
+    console.log(`📱 SMS to: owner_phone from Config (DB) or MY_CELL_NUMBER in .env — SMS from: profile Twilio number or TWILIO_PHONE_NUMBER`);
+    console.log(`📧 Email: ${process.env.BUSINESS_OWNER_EMAIL && process.env.EMAIL_APP_PASSWORD ? `Configured (→ ${process.env.BUSINESS_OWNER_EMAIL})` : '❌ MISSING (need BUSINESS_OWNER_EMAIL + EMAIL_APP_PASSWORD in .env)'}`);
     
     // Show webhook URL (use PUBLIC_URL or infer from host)
     const publicUrl = process.env.PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : null) || 'http://your-domain.com';
     console.log(`\n🔗 Configure Twilio webhook: ${publicUrl}/voice`);
+    console.log(`🛑 Twilio Status Callback (for lead/email when call ends): ${publicUrl}/call-ended — set on phone number in Twilio Console`);
     console.log(`🌐 Frontend: http://localhost:${PORT}/admin.html`);
     console.log(`\n💡 Production Mode: Sessions persist to Supabase, calls survive restarts\n`);
   });

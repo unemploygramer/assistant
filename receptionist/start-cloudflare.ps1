@@ -17,33 +17,29 @@ if (Test-Path $envPath) {
     }
 }
 
-# Kill any existing processes
+# Kill cloudflared (avoid duplicate tunnels). Don't kill node - dashboard may be on 3000.
 Get-Process -Name cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force
-Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*node*" } | Stop-Process -Force -ErrorAction SilentlyContinue
 
-# Get port from env or default to 3000 (matching your cloudflared command)
+# Phone server port: 3001 so dashboard can use 3000. Tunnel points to 3001.
 $port = $env:PHONE_SERVER_PORT
 if (-not $port) {
-    $port = 3000
+    $port = 3001
 }
+$env:PHONE_SERVER_PORT = $port
 
 # Your permanent Cloudflare domain
 $cloudflareDomain = "voicemail.snaptabapp.com"
 $cloudflareUrl = "https://$cloudflareDomain"
 $tunnelName = "voicemail-assistant"
 
-Write-Host "Starting phone server on port $port..." -ForegroundColor Yellow
+Write-Host "Starting phone server on port $port (in new window so you see logs)..." -ForegroundColor Yellow
 
-# Start phone server in background
-$serverJob = Start-Job -ScriptBlock {
-    param($port, $scriptRoot)
-    Set-Location $scriptRoot
-    $env:PORT = $port
-    node phone_server.js
-} -ArgumentList $port, $PSScriptRoot
+# Start phone server in a NEW VISIBLE WINDOW - you'll see console logs when calls come in
+$serverCmd = "cd '$PSScriptRoot'; `$env:PHONE_SERVER_PORT='$port'; `$env:PORT='$port'; node phone_server.js"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", $serverCmd
 
 # Wait for server to start
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 4
 
 Write-Host "Starting Cloudflare Tunnel (named tunnel: $tunnelName)..." -ForegroundColor Yellow
 Write-Host ""
@@ -118,7 +114,6 @@ try {
     Write-Host "Failed to start cloudflared: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Try running manually in another terminal:" -ForegroundColor Yellow
     Write-Host "  cloudflared tunnel run --url http://localhost:$port $tunnelName" -ForegroundColor Gray
-    Stop-Job $serverJob -ErrorAction SilentlyContinue
     exit 1
 }
 
@@ -206,9 +201,11 @@ if ($twilioSid -and $twilioToken -and $twilioPhone) {
 
 Write-Host ""
 Write-Host "Server and tunnel are running!" -ForegroundColor Cyan
+Write-Host "  - Phone server: new window (close that window to stop it)" -ForegroundColor Gray
+Write-Host "  - Tunnel: this window" -ForegroundColor Gray
 Write-Host "Permanent URL: $cloudflareUrl" -ForegroundColor Green
-Write-Host "Press Ctrl+C to stop both." -ForegroundColor Yellow
+Write-Host "Press Ctrl+C to stop the tunnel (phone server keeps running in its window)." -ForegroundColor Yellow
 Write-Host ""
 
-# Show server output
-Receive-Job $serverJob -Wait
+# Keep script running so cloudflared stays alive; Ctrl+C stops tunnel
+Wait-Process -Id $cloudflaredProcess.Id -ErrorAction SilentlyContinue
