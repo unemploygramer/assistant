@@ -36,11 +36,7 @@ export async function middleware(request: NextRequest) {
   const isAuthPage = pathname === '/login' || pathname === '/signup'
   const isDashboard = pathname.startsWith('/dashboard')
 
-  if (pathname === '/dashboard') {
-    const res = NextResponse.redirect(new URL('/dashboard/config', request.url))
-    response.cookies.getAll().forEach((c) => res.cookies.set(c.name, c.value, { path: '/' }))
-    return res
-  }
+  // /dashboard shows Command Center; no redirect
   if (isDashboard && !user && !isAuthPage) {
     const redirect = new URL('/login', request.url)
     redirect.searchParams.set('next', pathname)
@@ -49,7 +45,7 @@ export async function middleware(request: NextRequest) {
     return res
   }
   if (isAuthPage && user) {
-    const res = NextResponse.redirect(new URL('/dashboard/config', request.url))
+    const res = NextResponse.redirect(new URL('/dashboard', request.url))
     response.cookies.getAll().forEach((c) => res.cookies.set(c.name, c.value, { path: '/' }))
     return res
   }

@@ -14,7 +14,7 @@ export async function GET() {
 
     const { data, error } = await supabase
       .from('business_profiles')
-      .select('business_name, bot_config, twilio_phone_number, calendar_id, owner_phone, updated_at')
+      .select('business_name, bot_config, twilio_phone_number, calendar_id, owner_phone, updated_at, subscription_status, stripe_customer_id')
       .eq('user_id', user.id)
       .eq('is_active', true)
       .limit(1)
@@ -37,11 +37,14 @@ export async function GET() {
         tone: (botConfig?.tone as string) || 'professional',
         customKnowledge: (botConfig?.customKnowledge as string) || '',
         requiredLeadInfo: (botConfig?.requiredLeadInfo as string[]) || [],
+        businessType: (botConfig?.businessType as string) || 'general',
+        appointmentDetails: (botConfig?.appointmentDetails as { serviceTypes?: string[]; defaultDurationMinutes?: number; bookingRules?: string }) || { serviceTypes: [], defaultDurationMinutes: 30, bookingRules: '' },
       },
       twilio_phone_number: data.twilio_phone_number ?? null,
       calendar_id: data.calendar_id ?? (botConfig?.google_calendar_id as string) ?? null,
       owner_phone: data.owner_phone ?? null,
       saved_at: data.updated_at ?? null,
+      subscription_status: data.subscription_status ?? null,
     }
     console.log('[API config GET] returning profile', { business_name: data.business_name, twilio_phone_number: data.twilio_phone_number, owner_phone: data.owner_phone, calendar_id: data.calendar_id })
     return NextResponse.json(payload)
@@ -60,13 +63,15 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { businessName, tone, customKnowledge, requiredLeadInfo, twilio_phone_number, calendar_id, owner_phone } = body
+    const { businessName, tone, customKnowledge, requiredLeadInfo, twilio_phone_number, calendar_id, owner_phone, businessType, appointmentDetails } = body
 
     const botConfig = {
       tone: tone || 'professional',
       customKnowledge: customKnowledge || '',
       requiredLeadInfo: requiredLeadInfo || [],
       ...(calendar_id != null && { google_calendar_id: calendar_id }),
+      ...(businessType != null && { businessType: businessType || 'general' }),
+      ...(appointmentDetails != null && { appointmentDetails: appointmentDetails || { serviceTypes: [], defaultDurationMinutes: 30, bookingRules: '' } }),
     }
 
     const { data: existing } = await supabase

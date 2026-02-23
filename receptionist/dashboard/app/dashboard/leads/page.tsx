@@ -151,24 +151,24 @@ export default function LeadsPage() {
 
   if (loading) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center bg-slate-50">
-        <Loader2 className="h-8 w-8 animate-spin text-slate-500" />
+      <div className="flex min-h-[60vh] items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+    <div className="min-h-screen bg-background px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
       <div className="mx-auto max-w-7xl">
         {/* Page header */}
         <div className="mb-6 sm:mb-8">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white shadow-sm border border-slate-200">
-              <MessageSquare className="h-5 w-5 text-slate-700" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg glass shadow-sm border border-white/10">
+              <MessageSquare className="h-5 w-5 text-foreground" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Leads</h1>
-              <p className="mt-0.5 text-sm text-slate-600 sm:text-base">
+              <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Leads</h1>
+              <p className="mt-0.5 text-sm text-muted-foreground sm:text-base">
                 View and manage leads from your phone line
               </p>
             </div>
@@ -176,23 +176,23 @@ export default function LeadsPage() {
         </div>
 
         {leads.length === 0 ? (
-          <div className="rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm sm:p-12">
-            <MessageSquare className="mx-auto mb-4 h-12 w-12 text-slate-300" />
-            <h2 className="text-lg font-semibold text-slate-900">No leads yet</h2>
-            <p className="mx-auto mt-2 max-w-sm text-slate-600">
+          <div className="rounded-xl border border-white/10 glass p-8 text-center shadow-sm sm:p-12">
+            <MessageSquare className="mx-auto mb-4 h-12 w-12 text-muted-foreground" />
+            <h2 className="text-lg font-semibold text-foreground">No leads yet</h2>
+            <p className="mx-auto mt-2 max-w-sm text-muted-foreground">
               Leads from phone calls will show here once calls start coming in.
             </p>
-            <div className="mx-auto mt-6 max-w-md rounded-lg border border-amber-200 bg-amber-50 p-4 text-left text-sm text-amber-900">
+            <div className="mx-auto mt-6 max-w-md rounded-lg border border-primary/30 glass p-4 text-left text-sm text-foreground">
               <p className="font-medium">How leads are linked to you</p>
-              <p className="mt-1 text-amber-800">
+              <p className="mt-1 text-muted-foreground">
                 Leads appear only for calls to <strong>your</strong> Twilio number (set in Config).
               </p>
               {configTwilioNumber ? (
-                <p className="mt-2 text-amber-800">
+                <p className="mt-2 text-muted-foreground">
                   Your line: <strong>{configTwilioNumber}</strong>. If you expect leads here, set Config → Twilio number to the number that receives your calls.
                 </p>
               ) : (
-                <p className="mt-2 text-amber-800">
+                <p className="mt-2 text-muted-foreground">
                   Set your Twilio number in Config so new leads show here.
                 </p>
               )}
@@ -205,18 +205,18 @@ export default function LeadsPage() {
               {leads.map((lead) => (
                 <div
                   key={lead.id}
-                  className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+                  className="rounded-xl border border-white/10 glass p-4 shadow-sm"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 text-slate-900">
-                        <Phone className="h-4 w-4 shrink-0 text-slate-400" />
+                      <div className="flex items-center gap-2 text-foreground">
+                        <Phone className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <span className="font-medium">{formatPhone(lead.phone)}</span>
                       </div>
-                      <p className="mt-1 line-clamp-2 text-sm text-slate-600">
+                      <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
                         {formatSummary(lead.summary)}
                       </p>
-                      <p className="mt-1 text-xs text-slate-500">{formatDate(lead.created_at)}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{formatDate(lead.created_at)}</p>
                     </div>
                     <Select
                       value={lead.status}
@@ -248,14 +248,14 @@ export default function LeadsPage() {
                       </SheetHeader>
                       <div className="mt-6 space-y-4">
                         <div>
-                          <h3 className="text-sm font-medium text-slate-700">Summary</h3>
-                          <p className="mt-1 rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
+                          <h3 className="text-sm font-medium text-foreground">Summary</h3>
+                          <p className="mt-1 rounded-lg bg-background p-3 text-sm text-muted-foreground">
                             {formatSummary(lead.summary)}
                           </p>
                         </div>
                         <div>
-                          <h3 className="text-sm font-medium text-slate-700">Full transcript</h3>
-                          <div className="mt-1 max-h-[60vh] overflow-auto rounded-lg bg-slate-900 p-3 font-mono text-xs text-slate-100 whitespace-pre-wrap">
+                          <h3 className="text-sm font-medium text-foreground">Full transcript</h3>
+                          <div className="mt-1 max-h-[60vh] overflow-auto rounded-lg bg-background p-3 font-mono text-xs text-foreground whitespace-pre-wrap">
                             {lead.transcript || 'No transcript'}
                           </div>
                         </div>
@@ -267,33 +267,33 @@ export default function LeadsPage() {
             </div>
 
             {/* Desktop: table */}
-            <div className="hidden sm:block overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="hidden sm:block overflow-hidden rounded-xl border border-white/10 glass shadow-sm">
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow className="border-slate-200 bg-slate-50/80">
-                      <TableHead className="font-semibold text-slate-700">Caller</TableHead>
-                      <TableHead className="font-semibold text-slate-700">Summary</TableHead>
-                      <TableHead className="font-semibold text-slate-700">Status</TableHead>
-                      <TableHead className="font-semibold text-slate-700">Date</TableHead>
-                      <TableHead className="w-[120px] font-semibold text-slate-700">Actions</TableHead>
+                    <TableRow className="border-white/10 bg-background/80">
+                      <TableHead className="font-semibold text-foreground">Caller</TableHead>
+                      <TableHead className="font-semibold text-foreground">Summary</TableHead>
+                      <TableHead className="font-semibold text-foreground">Status</TableHead>
+                      <TableHead className="font-semibold text-foreground">Date</TableHead>
+                      <TableHead className="w-[120px] font-semibold text-foreground">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {leads.map((lead) => (
-                      <TableRow key={lead.id} className="border-slate-100">
-                        <TableCell className="font-medium text-slate-900">
+                      <TableRow key={lead.id} className="border-border">
+                        <TableCell className="font-medium text-foreground">
                           <div className="flex items-center gap-2">
-                            <Phone className="h-4 w-4 text-slate-400" />
+                            <Phone className="h-4 w-4 text-muted-foreground" />
                             {formatPhone(lead.phone)}
                           </div>
                         </TableCell>
                         <TableCell>
-                          <p className="max-w-xs text-sm text-slate-700 line-clamp-2">
+                          <p className="max-w-xs text-sm text-foreground line-clamp-2">
                             {formatSummary(lead.summary)}
                           </p>
                           {lead.industry && (
-                            <p className="mt-0.5 text-xs text-slate-500">{lead.industry}</p>
+                            <p className="mt-0.5 text-xs text-muted-foreground">{lead.industry}</p>
                           )}
                         </TableCell>
                         <TableCell>
@@ -314,7 +314,7 @@ export default function LeadsPage() {
                             </SelectContent>
                           </Select>
                         </TableCell>
-                        <TableCell className="text-sm text-slate-600">
+                        <TableCell className="text-sm text-muted-foreground">
                           {formatDate(lead.created_at)}
                         </TableCell>
                         <TableCell>
@@ -333,19 +333,19 @@ export default function LeadsPage() {
                               </SheetHeader>
                               <div className="mt-6 space-y-4">
                                 <div>
-                                  <h3 className="text-sm font-medium text-slate-700">Summary</h3>
-                                  <p className="mt-1 rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
+                                  <h3 className="text-sm font-medium text-foreground">Summary</h3>
+                                  <p className="mt-1 rounded-lg bg-background p-3 text-sm text-muted-foreground">
                                     {formatSummary(lead.summary)}
                                   </p>
                                 </div>
                                 <div>
-                                  <h3 className="text-sm font-medium text-slate-700">Full transcript</h3>
-                                  <div className="mt-1 max-h-[60vh] overflow-auto rounded-lg bg-slate-900 p-4 font-mono text-xs text-slate-100 whitespace-pre-wrap">
+                                  <h3 className="text-sm font-medium text-foreground">Full transcript</h3>
+                                  <div className="mt-1 max-h-[60vh] overflow-auto rounded-lg bg-background p-4 font-mono text-xs text-foreground whitespace-pre-wrap">
                                     {lead.transcript || 'No transcript'}
                                   </div>
                                 </div>
                                 {lead.call_sid && (
-                                  <p className="text-xs text-slate-500">Call SID: {lead.call_sid}</p>
+                                  <p className="text-xs text-muted-foreground">Call SID: {lead.call_sid}</p>
                                 )}
                               </div>
                             </SheetContent>

@@ -11,11 +11,11 @@ function LoginForm() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const searchParams = useSearchParams()
-  const rawNext = searchParams.get('next') ?? '/dashboard/config'
+  const rawNext = searchParams.get('next') ?? '/dashboard'
   const next = (() => {
-    if (!rawNext || rawNext === '/dashboard') return '/dashboard/config'
+    if (!rawNext || rawNext === '/dashboard') return '/dashboard'
     if (rawNext.startsWith('/') && !rawNext.startsWith('//')) return rawNext
-    return '/dashboard/config'
+    return '/dashboard'
   })()
 
   async function handleSubmit(e: React.FormEvent) {
@@ -36,43 +36,43 @@ function LoginForm() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center px-4">
-      <div className="max-w-sm w-full bg-white rounded-xl border border-slate-200 shadow-sm p-8">
-        <h1 className="text-xl font-bold text-slate-900 mb-6">Log in</h1>
+    <div className="min-h-screen bg-background flex flex-col items-center justify-center px-4">
+      <div className="max-w-sm w-full glass rounded-xl p-8">
+        <h1 className="text-xl font-bold text-foreground mb-6">Log in</h1>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label htmlFor="email" className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+            <label htmlFor="email" className="block text-sm font-medium text-foreground mb-1">Email</label>
             <input
               id="email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              className="w-full px-4 py-2 border border-white/10 rounded-lg bg-white/5 focus:ring-2 focus:ring-primary focus:border-primary outline-none text-foreground"
               placeholder="you@example.com"
             />
           </div>
           <div>
-            <label htmlFor="password" className="block text-sm font-medium text-slate-700 mb-1">Password</label>
+            <label htmlFor="password" className="block text-sm font-medium text-foreground mb-1">Password</label>
             <input
               id="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              className="w-full px-4 py-2 border border-white/10 rounded-lg bg-white/5 focus:ring-2 focus:ring-primary focus:border-primary outline-none text-foreground"
             />
           </div>
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3 px-4 bg-slate-900 text-white rounded-lg font-medium hover:bg-slate-800 disabled:opacity-50 transition"
+            className="w-full py-3 px-4 bg-primary text-primary-foreground rounded-lg font-medium hover:bg-primary/90 disabled:opacity-50 transition"
           >
             {loading ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
-        <p className="mt-6 text-center text-sm text-slate-500">
-          No account? <Link href="/signup" className="text-blue-600 hover:underline">Sign up</Link>
+        <p className="mt-6 text-center text-sm text-muted-foreground">
+          No account? <Link href="/signup" className="text-primary hover:underline">Sign up</Link>
         </p>
       </div>
     </div>
@@ -82,13 +82,13 @@ function LoginForm() {
 export default function LoginPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center px-4">
-        <div className="max-w-sm w-full bg-white rounded-xl border border-slate-200 shadow-sm p-8 animate-pulse">
-          <div className="h-7 bg-slate-200 rounded w-24 mb-6" />
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center px-4">
+        <div className="max-w-sm w-full glass rounded-xl p-8 animate-pulse">
+          <div className="h-7 bg-white/10 rounded w-24 mb-6" />
           <div className="space-y-4">
-            <div className="h-10 bg-slate-100 rounded" />
-            <div className="h-10 bg-slate-100 rounded" />
-            <div className="h-11 bg-slate-200 rounded" />
+            <div className="h-10 bg-white/5 rounded" />
+            <div className="h-10 bg-white/5 rounded" />
+            <div className="h-11 bg-white/10 rounded" />
           </div>
         </div>
       </div>

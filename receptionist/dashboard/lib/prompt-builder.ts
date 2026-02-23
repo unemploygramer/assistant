@@ -4,11 +4,19 @@
  * This function is used in both the dashboard (preview) and the phone server (actual API calls)
  */
 
+export interface AppointmentDetails {
+  serviceTypes: string[]
+  defaultDurationMinutes: number
+  bookingRules?: string
+}
+
 export interface BotConfig {
   businessName: string
   tone: 'professional' | 'casual' | 'energetic' | 'direct'
   customKnowledge: string
   requiredLeadInfo: string[]
+  businessType?: string
+  appointmentDetails?: AppointmentDetails
 }
 
 export interface PromptBuilderOptions {
@@ -21,6 +29,21 @@ const TONE_PROMPTS = {
   casual: `You are a friendly phone receptionist. Be warm, approachable, and conversational. It's okay to be more relaxed and use everyday language.`,
   energetic: `You are an enthusiastic phone receptionist. Be upbeat, positive, and show excitement about helping the caller. Use energetic language and be engaging.`,
   direct: `You are a straightforward phone receptionist. Be clear, concise, and get to the point quickly. Avoid unnecessary pleasantries and focus on efficiency.`
+}
+
+/** Info gathering presets by business type */
+export const BUSINESS_TYPE_PRESETS: Record<string, string[]> = {
+  general: ['Name', 'Phone', 'Service Type', 'Urgency'],
+  hvac: ['Name', 'Phone', 'Service Type', 'Urgency', 'Address', 'Preferred Callback'],
+  plumbing: ['Name', 'Phone', 'Service Type', 'Urgency', 'Address', 'Preferred Callback'],
+  strip_club: ['Name', 'Phone', 'Preferred Callback', 'Service Type'],
+  restaurant: ['Name', 'Phone', 'Service Type', 'Preferred Callback'],
+  salon: ['Name', 'Phone', 'Service Type', 'Preferred Callback'],
+  legal: ['Name', 'Phone', 'Email', 'Service Type', 'Urgency', 'Preferred Callback'],
+  medical: ['Name', 'Phone', 'Service Type', 'Urgency', 'Preferred Callback'],
+  real_estate: ['Name', 'Phone', 'Email', 'Service Type', 'Address', 'Budget', 'Preferred Callback'],
+  auto: ['Name', 'Phone', 'Service Type', 'Address', 'Preferred Callback'],
+  custom: [],
 }
 
 const REQUIRED_INFO_PROMPTS: Record<string, string> = {
@@ -73,6 +96,22 @@ PHONE NUMBER RULES:
 
 COLLECT THIS INFORMATION (one at a time):
 ${requiredInfoList || '- Their name\n- Phone number\n- What service they need\n- How urgent it is'}`
+
+  // Appointment details section (for calendar booking)
+  const appointmentDetails = config.appointmentDetails
+  if (appointmentDetails?.serviceTypes?.length || appointmentDetails?.defaultDurationMinutes || appointmentDetails?.bookingRules) {
+    let appointmentSection = '\n\nAPPOINTMENT BOOKING:'
+    if (appointmentDetails.serviceTypes?.length) {
+      appointmentSection += `\n- Service types available: ${appointmentDetails.serviceTypes.join(', ')}`
+    }
+    if (appointmentDetails.defaultDurationMinutes) {
+      appointmentSection += `\n- Default duration: ${appointmentDetails.defaultDurationMinutes} minutes`
+    }
+    if (appointmentDetails.bookingRules?.trim()) {
+      appointmentSection += `\n- Booking rules: ${appointmentDetails.bookingRules.trim()}`
+    }
+    prompt += appointmentSection
+  }
 
   // Add custom knowledge if provided
   if (customKnowledgeSection) {
