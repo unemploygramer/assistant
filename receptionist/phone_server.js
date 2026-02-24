@@ -1,5 +1,5 @@
 // phone_server.js - Production-Ready AI Phone Receptionist with Supabase
-// Load .env from parent directory (Baddie Assistant/.env) - NOT dashboard .env.local
+// Load .env from project root - NOT dashboard .env.local
 const path = require('path');
 const envPath = path.join(__dirname, '..', '.env');
 require('dotenv').config({ path: envPath });
@@ -12,7 +12,7 @@ const axios = require('axios');
 const VoiceResponse = require('twilio').twiml.VoiceResponse;
 const twilio = require('twilio');
 const nodemailer = require('nodemailer');
-const { upsertSession, getSession, deleteSession, saveLead, logNotification, updateNotification, getBotConfig } = require('./lib/db');
+const { upsertSession, getSession, deleteSession, saveLead, logNotification, updateNotification, getBotConfig, logCallEnded, updateCallEndedLog, checkInAppAvailability, saveInAppBooking } = require('./lib/db');
 const { buildSystemPrompt } = require('./lib/prompt-builder');
 const calendarService = require('./services/calendarService');
 
@@ -240,41 +240,94 @@ async function generateElevenLabsAudio(text) {
   }
 }
 
-// Default calendar when none set in business profile or env
-const DEFAULT_CALENDAR_ID = process.env.CALENDAR_ID || 'codedbytyler@gmail.com';
+// Return base64 MP3 for in-browser demo (no CORS / static file needed)
+async function generateElevenLabsAudioBase64(text) {
+  console.log(`🎙️ [ELEVENLABS-B64] Start, text length=${text?.length ?? 0}`);
+  if (!process.env.ELEVENLABS_KEY || !process.env.CUSTOMER_SERVICE_WOMEN) {
+    console.error(`🎙️ [ELEVENLABS-B64] Missing: ELEVENLABS_KEY=${!!process.env.ELEVENLABS_KEY}, CUSTOMER_SERVICE_WOMEN=${!!process.env.CUSTOMER_SERVICE_WOMEN}`);
+    throw new Error('ElevenLabs credentials missing');
+  }
+  try {
+    const response = await axios.post(
+      `https://api.elevenlabs.io/v1/text-to-speech/${process.env.CUSTOMER_SERVICE_WOMEN}`,
+      {
+        text: text,
+        model_id: 'eleven_turbo_v2',
+        voice_settings: { stability: 0.5, similarity_boost: 0.7 }
+      },
+      {
+        headers: {
+          'xi-api-key': process.env.ELEVENLABS_KEY,
+          'Content-Type': 'application/json'
+        },
+        responseType: 'arraybuffer',
+        timeout: 10000
+      }
+    );
+    const base64 = Buffer.from(response.data).toString('base64');
+    console.log(`🎙️ [ELEVENLABS-B64] OK, received ${response.data?.byteLength ?? 0} bytes, base64 length=${base64.length}`);
+    return base64;
+  } catch (e) {
+    console.error(`🎙️ [ELEVENLABS-B64] ElevenLabs API error:`, e.message);
+    if (e.response) console.error(`🎙️ [ELEVENLABS-B64] Status: ${e.response.status}, data:`, e.response.data);
+    throw e;
+  }
+}
 
 // Helper: Get AI response with resilience (call stays live on failure)
-async function getAIResponse(messages, callSid, twilioToNumber = null) {
-  console.log(`🤖 [AI] Getting response for call ${callSid}`);
+// options: { isBrowserDemo: true } for in-browser demo (no session, simulated calendar tools)
+async function getAIResponse(messages, callSid, twilioToNumber = null, options = {}) {
+  const isBrowserDemo = options.isBrowserDemo === true;
+  console.log(`🤖 [AI] Getting response for call ${callSid}${isBrowserDemo ? ' (browser demo)' : ''}`);
   console.log(`   Messages in context: ${messages.length}`);
 
-  // Fetch bot config and resolve calendar ID from business_profiles (twilio number -> google_calendar_id)
+  // Fetch bot config: web calendar always; Google also when connected
   let systemPrompt = PROFESSIONAL_SYSTEM_PROMPT;
-  let calendarId = DEFAULT_CALENDAR_ID;
+  let calendarId = null;
+  let businessProfileId = null;
   let businessName = null;
+  if (isBrowserDemo) {
+    businessName = 'Reception Demo';
+    systemPrompt = buildSystemPrompt({
+      businessName: 'Reception Demo',
+      tone: 'professional',
+      customKnowledge: 'This is a demo. Simulate booking an appointment when the user wants one.',
+      requiredLeadInfo: ['Name', 'Phone', 'Service Type', 'Preferred Callback'],
+      businessType: 'general',
+      appointmentDetails: { serviceTypes: ['Consultation', 'Service'], defaultDurationMinutes: 30, bookingRules: '' }
+    }, false);
+    console.log(`📋 [AI] Browser demo: using Reception Demo`);
+  }
   try {
-    const botConfig = await getBotConfig(twilioToNumber);
-    if (botConfig && botConfig.businessName) {
-      businessName = botConfig.businessName;
-      systemPrompt = buildSystemPrompt(botConfig, false);
-      console.log(`📋 [AI] Using dashboard config for: ${businessName}`);
-      if (botConfig.google_calendar_id) {
-        calendarId = botConfig.google_calendar_id;
-        console.log(`📅 [AI] Using calendar: ${calendarId}`);
+    if (!isBrowserDemo) {
+      const botConfig = await getBotConfig(twilioToNumber);
+      if (botConfig && botConfig.businessName) {
+        businessName = botConfig.businessName;
+        businessProfileId = botConfig.business_profile_id || null;
+        systemPrompt = buildSystemPrompt(botConfig, false);
+        console.log(`📋 [AI] Using dashboard config for: ${businessName}`);
+        if (botConfig.google_calendar_id) {
+          calendarId = botConfig.google_calendar_id;
+          console.log(`📅 [AI] Web calendar + Google Calendar: ${calendarId}`);
+        } else {
+          console.log(`📅 [AI] Web calendar only (no Google connected)`);
+        }
       } else {
-        console.log(`⚠️ [AI] No calendar ID in config, using default: ${calendarId}`);
+        console.log(`📋 [AI] No dashboard config found for ${twilioToNumber}, using default prompt`);
       }
-    } else {
-      console.log(`📋 [AI] No dashboard config found for ${twilioToNumber}, using default prompt`);
     }
   } catch (err) {
     console.error(`⚠️ [AI] Failed to fetch bot config:`, err.message);
   }
 
-  // Inject current date/time and calendar ID into system prompt
+  // Inject current date/time and calendar instructions
   const currentDatetime = new Date().toISOString();
   systemPrompt = systemPrompt.replace(/\{\{current_datetime\}\}/g, currentDatetime);
-  systemPrompt += `\n\nUse this calendar ID for check_availability and book_appointment: ${calendarId}.`;
+  systemPrompt += `\n\nAppointments are always saved to the dashboard (web calendar). Use check_availability and book_appointment as usual.`;
+  if (calendarId) {
+    systemPrompt += ` When Google Calendar is connected, use this calendar ID so appointments are also added there: ${calendarId}.`;
+  }
+  systemPrompt += ` So: always use the tools; the system stores in the web calendar and syncs to Google when connected.`;
 
   const fullMessages = [
     { role: 'system', content: systemPrompt },
@@ -290,15 +343,32 @@ async function getAIResponse(messages, callSid, twilioToNumber = null) {
 
     do {
       round++;
-      console.log(`📡 [AI] Calling OpenRouter API (model: openai/gpt-4o)${round > 1 ? ` round ${round}` : ''}...`);
-      completion = await openai.chat.completions.create({
-        messages: fullMessages,
-        model: 'openai/gpt-4o',
-        temperature: 0.7,
-        timeout: 20000,
-        tools: CALENDAR_TOOLS,
-        tool_choice: 'auto'
-      });
+      const apiMaxAttempts = 2;
+      let lastErr = null;
+      for (let apiAttempt = 1; apiAttempt <= apiMaxAttempts; apiAttempt++) {
+        try {
+          console.log(`📡 [AI] Calling OpenRouter API (model: openai/gpt-4o)${round > 1 ? ` round ${round}` : ''}${apiAttempt > 1 ? ` [retry ${apiAttempt}]` : ''}...`);
+          completion = await openai.chat.completions.create({
+            messages: fullMessages,
+            model: 'openai/gpt-4o',
+            temperature: 0.7,
+            timeout: 20000,
+            tools: CALENDAR_TOOLS,
+            tool_choice: 'auto'
+          });
+          lastErr = null;
+          break;
+        } catch (apiErr) {
+          lastErr = apiErr;
+          const isRetryable = /timeout|ECONNRESET|ETIMEDOUT|fetch failed|503|502|429/i.test(apiErr?.message || '');
+          if (isRetryable && apiAttempt < apiMaxAttempts) {
+            console.warn(`⚠️ [AI] OpenRouter attempt ${apiAttempt}/${apiMaxAttempts} failed (${apiErr.message}), retrying in 800ms...`);
+            await new Promise(r => setTimeout(r, 800));
+          } else {
+            throw apiErr;
+          }
+        }
+      }
 
       const msg = completion.choices[0].message;
       if (!msg.tool_calls || msg.tool_calls.length === 0) {
@@ -327,21 +397,81 @@ async function getAIResponse(messages, callSid, twilioToNumber = null) {
         }
         let result;
         try {
-          // Ensure calendar ID is set (use resolved one if AI didn't provide it)
-          const resolvedCalendarId = args.calendarId || calendarId || DEFAULT_CALENDAR_ID;
-          if (!args.calendarId && calendarId) {
-            console.log(`📅 [TOOL] Injecting calendar ID: ${calendarId} (AI didn't provide one)`);
-          }
-          
-          if (fnName === 'check_availability') {
-            result = await calendarService.check_availability(resolvedCalendarId, args.startTime, args.endTime);
-            console.log(`📅 [TOOL] check_availability(${resolvedCalendarId}): ${result.available ? 'available' : 'busy'}`);
-          } else if (fnName === 'book_appointment') {
-            result = await calendarService.book_appointment(resolvedCalendarId, args.summary, args.startTime, args.endTime);
-            console.log(`📅 [TOOL] book_appointment(${resolvedCalendarId}): ${result.success ? 'ok' : result.error || 'failed'}`);
-            
-            // Send immediate email notification after successful booking
-            if (result.success) {
+          const sessionForTool = isBrowserDemo ? null : await getSession(callSid);
+          const isDemoModeTool = isBrowserDemo || sessionForTool?.metadata?.isDemoMode === true;
+          if (isDemoModeTool && (fnName === 'check_availability' || fnName === 'book_appointment')) {
+            if (fnName === 'check_availability') {
+              result = { available: true, message: 'Slot is available (demo mode)' };
+              console.log(`📅 [TOOL] check_availability: simulated success (Demo Mode)`);
+            } else {
+              result = { success: true, message: 'Appointment booked (demo mode—simulated)' };
+              console.log(`📅 [TOOL] book_appointment: simulated success (Demo Mode)`);
+            }
+          } else if (fnName === 'check_availability' || fnName === 'book_appointment') {
+            // Always use web (in-app) calendar; if Google is connected, do both
+            const resolvedCalendarId = args.calendarId || calendarId;
+            if (!businessProfileId) {
+              if (resolvedCalendarId) {
+                try {
+                  if (fnName === 'check_availability') {
+                    result = await calendarService.check_availability(resolvedCalendarId, args.startTime, args.endTime);
+                  } else {
+                    result = await calendarService.book_appointment(resolvedCalendarId, args.summary, args.startTime, args.endTime);
+                  }
+                } catch (e) {
+                  result = { error: e.message, available: false, success: false };
+                }
+              } else {
+                result = { error: 'No calendar configured', available: false, success: false };
+              }
+            } else {
+              if (fnName === 'check_availability') {
+                const inApp = await checkInAppAvailability(businessProfileId, args.startTime, args.endTime);
+                let googleOk = true;
+                if (resolvedCalendarId) {
+                  try {
+                    const googleResult = await calendarService.check_availability(resolvedCalendarId, args.startTime, args.endTime);
+                    googleOk = googleResult.available;
+                    console.log(`📅 [TOOL] check_availability: in-app ${inApp.available ? 'ok' : 'busy'}, Google ${googleOk ? 'ok' : 'busy'}`);
+                  } catch (e) {
+                    console.error(`❌ [TOOL] Google check_availability error (using web calendar only):`, e.message);
+                    // Don't block the caller: when Google fails (e.g. JWT), use web calendar only
+                    googleOk = true;
+                  }
+                } else {
+                  console.log(`📅 [TOOL] check_availability (in-app only): ${inApp.available ? 'available' : 'busy'}`);
+                }
+                result = { available: inApp.available && googleOk };
+              } else {
+                const session = await getSession(callSid);
+                const fromNumber = session?.metadata?.fromNumber || null;
+                const customerName = (args.summary || '').replace(/^.*-\s*/i, '').trim() || null;
+                const inAppResult = await saveInAppBooking({
+                  businessProfileId,
+                  customerName: customerName || null,
+                  customerPhone: fromNumber,
+                  startTime: args.startTime,
+                  endTime: args.endTime,
+                  serviceType: null,
+                  leadId: null
+                });
+                let googleOk = false;
+                if (resolvedCalendarId) {
+                  try {
+                    const googleResult = await calendarService.book_appointment(resolvedCalendarId, args.summary, args.startTime, args.endTime);
+                    googleOk = googleResult.success;
+                    console.log(`📅 [TOOL] book_appointment: in-app ${inAppResult.success ? 'ok' : 'failed'}, Google ${googleOk ? 'ok' : 'failed'}`);
+                  } catch (e) {
+                    console.error(`❌ [TOOL] Google book_appointment error (appointment still saved to web calendar):`, e.message);
+                  }
+                } else {
+                  console.log(`📅 [TOOL] book_appointment (in-app only): ${inAppResult.success ? 'ok' : inAppResult.error || 'failed'}`);
+                }
+                result = { success: inAppResult.success };
+              }
+            }
+            // Send immediate email/SMS after any successful booking (web calendar success)
+            if (result.success && fnName === 'book_appointment') {
               console.log(`📧 [TOOL] Sending immediate email notification for appointment booking...`);
               try {
                 const session = await getSession(callSid);
@@ -518,7 +648,7 @@ async function sendEmailNotification(callDetails, callSid) {
   console.log(`   EMAIL_APP_PASSWORD: ${process.env.EMAIL_APP_PASSWORD ? `set (${process.env.EMAIL_APP_PASSWORD.length} chars)` : '❌ NOT SET'}`);
 
   if (!process.env.BUSINESS_OWNER_EMAIL || !process.env.EMAIL_APP_PASSWORD) {
-    console.log(`⚠️ [EMAIL] Skipping - BUSINESS_OWNER_EMAIL or EMAIL_APP_PASSWORD missing in .env (use Baddie Assistant root .env, not dashboard .env.local)`);
+    console.log(`⚠️ [EMAIL] Skipping - BUSINESS_OWNER_EMAIL or EMAIL_APP_PASSWORD missing in .env (use project root .env, not dashboard .env.local)`);
     return false;
   }
 
@@ -717,7 +847,7 @@ async function logNotificationWithSMS(leadId, messageBody, callSid, callDetails,
       console.error(`   Stack:`, error.stack);
     }
   } else {
-    console.log(`📬 [NOTIFY] Email skipped - env not configured (need .env in Baddie Assistant root, not dashboard .env.local)`);
+    console.log(`📬 [NOTIFY] Email skipped - env not configured (need .env in project root, not dashboard .env.local)`);
   }
 
   // Resolve SMS to/from: prefer DB (options), then env. Normalize to E.164 (e.g. 10 digits → +1xxxxxxxxxx).
@@ -827,8 +957,34 @@ app.post('/voice', async (req, res) => {
   console.log(`   Request Body:`, JSON.stringify(req.body, null, 2));
   
   const callSid = req.body.CallSid;
-  const fromNumber = req.body.From;   // Caller (stored in leads.phone)
-  const twilioToNumber = req.body.To; // Number they dialed = your Twilio/business line (stored in leads.from_number → links to dashboard owner)
+  const callStatus = req.body.CallStatus;
+  const direction = req.body.Direction;
+  const fromNumber = req.body.From;   // Caller (incoming) or demo line (outbound-api)
+  const twilioToNumber = req.body.To; // Business line they dialed (incoming) or customer who answered (outbound-api)
+  const isOutboundDemo = direction === 'outbound-api';
+  const businessLineNumber = isOutboundDemo ? fromNumber : twilioToNumber;  // Your Twilio number (config lookup)
+  const callerNumber = isOutboundDemo ? twilioToNumber : fromNumber;        // Caller/customer number (for leads)
+  
+  // If Twilio sends status update to /voice instead of /call-ended (e.g. when you hang up immediately), handle it
+  if (callStatus && ['completed', 'canceled', 'failed', 'busy', 'no-answer'].includes(callStatus)) {
+    console.log(`🛑 [VOICE] Call ended (status: ${callStatus}) - handling as call-ended event`);
+    // Log and process as if /call-ended was called
+    const logEntry = await logCallEnded(callSid, callStatus, businessLineNumber, callerNumber);
+    if (logEntry) {
+      console.log(`📝 [VOICE] Logged call-ended event: id=${logEntry.id}`);
+      await updateCallEndedLog(callSid, { status: 'processing' }).catch(logErr => console.error('Failed to update log:', logErr));
+    }
+    processCallCompletion(callSid, { statusCallbackTo: businessLineNumber, statusCallbackFrom: callerNumber, logEntryId: logEntry?.id }).catch(err => {
+      console.error(`❌ [VOICE] processCallCompletion failed:`, err.message);
+      if (logEntry) {
+        updateCallEndedLog(callSid, { status: 'error', error_message: err.message }).catch(() => {});
+      }
+    });
+    // Return empty TwiML since call is already ended
+    res.type('text/xml');
+    res.send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+    return;
+  }
   
   if (!callSid) {
     console.error(`❌ [VOICE] NO CALL SID IN REQUEST!`);
@@ -838,28 +994,57 @@ app.post('/voice', async (req, res) => {
   }
   
   console.log(`📞 [VOICE] Call SID: ${callSid}`);
-  console.log(`📞 [VOICE] From: ${fromNumber}`);
-  console.log(`📞 [VOICE] To (dialed number): ${twilioToNumber}`);
+  console.log(`📞 [VOICE] From: ${fromNumber} | To: ${twilioToNumber}`);
+  if (isOutboundDemo) console.log(`📞 [VOICE] Outbound demo: business line=${businessLineNumber}, caller=${callerNumber}`);
+
+  const demoLine = process.env.DEMO_LINE || process.env.TWILIO_PHONE_NUMBER;
+  const normalizeForCompare = (n) => (n && String(n).replace(/\D/g, '').slice(-10)) || '';
+  const isDemoMode = !!demoLine && normalizeForCompare(businessLineNumber) === normalizeForCompare(demoLine);
+  if (isDemoMode) console.log(`📞 [VOICE] Demo Mode: using Reception Demo, simulated calendar, sample email to dev`);
+  if (isOutboundDemo && !isDemoMode) console.log(`📞 [VOICE] Outbound but isDemoMode=false (businessLine=${businessLineNumber}, demoLine=${demoLine})`);
   
-  // Identify which business this call is for
-  let businessName = 'Unknown Business';
+  // Identify which business this call is for (use business line; for demo line use hardcoded Demo Mode)
+  let businessName = process.env.BUSINESS_NAME || 'your business';
   let calendarId = null;
+  let botConfig = null;
   try {
-    const botConfig = await getBotConfig(twilioToNumber);
-    if (botConfig && botConfig.businessName) {
-      businessName = botConfig.businessName;
-      calendarId = botConfig.google_calendar_id || null;
-      console.log(`📞 Call for [${businessName}] incoming`);
-      if (calendarId) {
-        console.log(`📅 Calendar ID: ${calendarId}`);
-      } else {
-        console.log(`⚠️ No calendar ID configured for this business`);
-      }
+    if (isDemoMode) {
+      businessName = 'Reception Demo';
+      calendarId = null; // simulated booking only
+      botConfig = { businessName, google_calendar_id: null, owner_phone: null, twilio_phone_number: businessLineNumber };
     } else {
-      console.log(`⚠️ No business profile found for number ${twilioToNumber} - using defaults`);
+      botConfig = await getBotConfig(businessLineNumber);
+      if (botConfig && botConfig.businessName) {
+        businessName = botConfig.businessName;
+        calendarId = botConfig.google_calendar_id || null;
+        console.log(`📞 Call for [${businessName}] incoming`);
+        if (calendarId) {
+          console.log(`📅 Calendar ID: ${calendarId}`);
+        } else {
+          console.log(`⚠️ No calendar ID configured for this business`);
+        }
+      } else if (isOutboundDemo) {
+        botConfig = await getBotConfig(null);
+        if (botConfig && botConfig.businessName) {
+          businessName = botConfig.businessName;
+          calendarId = botConfig.google_calendar_id || null;
+          console.log(`📞 [VOICE] Demo fallback: using first active profile [${businessName}]`);
+        } else {
+          businessName = process.env.BUSINESS_NAME || 'Demo Business';
+          console.log(`📞 [VOICE] Demo: no profile found, using env BUSINESS_NAME`);
+        }
+      } else {
+        console.log(`⚠️ [VOICE] Number ${businessLineNumber} is not assigned to any business`);
+        res.type('text/xml');
+        res.send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna-Neural">This number is not yet active. Please try again later.</Say></Response>');
+        return;
+      }
     }
   } catch (err) {
     console.error(`⚠️ [VOICE] Failed to identify business:`, err.message);
+    res.type('text/xml');
+    res.send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna-Neural">We are having technical difficulties. Please try again later.</Say></Response>');
+    return;
   }
 
   // Try to recover session if server restarted
@@ -877,10 +1062,10 @@ app.post('/voice', async (req, res) => {
     console.error(`   Stack:`, error.stack);
   }
 
-  // Initialize or restore session (always include twilioToNumber for config lookup)
+  // Initialize or restore session (businessLineNumber=your Twilio number, callerNumber=caller/customer)
   const messages = session ? session.transcript_buffer : [];
-  const baseMetadata = session ? session.metadata : { fromNumber, startTime: new Date().toISOString() };
-  const metadata = { ...baseMetadata, twilioToNumber, businessName, calendarId };
+  const baseMetadata = session ? session.metadata : { fromNumber: callerNumber, startTime: new Date().toISOString() };
+  const metadata = { ...baseMetadata, twilioToNumber: businessLineNumber, fromNumber: callerNumber, businessName, calendarId, isDemoMode: !!isDemoMode };
   console.log(`📝 [VOICE] Session state: ${messages.length} messages, metadata:`, JSON.stringify(metadata));
 
   // Save initial session
@@ -894,17 +1079,16 @@ app.post('/voice', async (req, res) => {
     // Continue anyway - non-critical
   }
 
-  // Business name already identified above, use it for greeting
-
-  console.log(`🎙️ [VOICE] Generating greeting...`);
+  // First greeting: business name FIRST so callers know they reached the right place
+  console.log(`🎙️ [VOICE] Generating first greeting (business: ${businessName})...`);
   const twiml = new VoiceResponse();
   
   // Configure status callback so we get notified when call ends (for email notification)
-  // Note: This should also be set in Twilio webhook settings, but adding here as backup
   const statusCallbackUrl = `${process.env.PUBLIC_URL || 'http://localhost:3001'}/call-ended`;
   console.log(`📞 [VOICE] Status callback URL: ${statusCallbackUrl}`);
   
-  const greeting = `Thank you for calling ${businessName}. How can I assist you today?`;
+  // Lead with business name so callers immediately know they reached the right place
+  const greeting = `You've reached ${businessName}. Thank you for calling. How can I assist you today?`;
   
   // Try ElevenLabs, fallback to Twilio TTS (resilient)
   if (process.env.PUBLIC_URL) {
@@ -1126,13 +1310,19 @@ app.post('/gather', async (req, res) => {
 app.post('/call-ended', async (req, res) => {
   const callSid = req.body.CallSid;
   const callStatus = req.body.CallStatus || 'unknown';
-  const statusCallbackTo = req.body.To || null;
-  const statusCallbackFrom = req.body.From || null;
+  const twilioTo = req.body.To || null;
+  const twilioFrom = req.body.From || null;
+  const demoLine = process.env.DEMO_LINE || process.env.TWILIO_PHONE_NUMBER;
+  // Outbound demo: From = demo line, To = customer. Swap so business line = From, caller = To.
+  const isOutboundDemo = twilioFrom === demoLine;
+  const statusCallbackTo = isOutboundDemo ? twilioFrom : twilioTo;   // Business line (demo or dialed number)
+  const statusCallbackFrom = isOutboundDemo ? twilioTo : twilioFrom; // Caller (customer or inbound caller)
 
   // One clear line: dropped vs completed (Twilio: completed = call ended normally; canceled/failed/no-answer = dropped/failed)
   const isDropped = ['canceled', 'failed', 'no-answer', 'busy'].includes(callStatus);
   const endType = isDropped ? 'DROPPED/FAILED' : 'ENDED (completed)';
-  console.log(`\n🛑 CALL ENDED — CallSid: ${callSid || 'MISSING'} | CallStatus: ${callStatus} (${endType}) | To: ${statusCallbackTo} | From: ${statusCallbackFrom}`);
+  if (isOutboundDemo) console.log(`   [CALL-ENDED] Outbound demo: Twilio To=${twilioTo} From=${twilioFrom} → business=${statusCallbackTo} caller=${statusCallbackFrom}`);
+  console.log(`\n🛑 CALL ENDED — CallSid: ${callSid || 'MISSING'} | CallStatus: ${callStatus} (${endType}) | To: ${twilioTo} | From: ${twilioFrom}`);
   console.log(`   (If you never see this when caller hangs up, set Twilio phone number → Voice → Status callback URL → ${process.env.PUBLIC_URL || 'http://localhost:3001'}/call-ended)`);
 
   if (!callSid) {
@@ -1141,17 +1331,36 @@ app.post('/call-ended', async (req, res) => {
     return;
   }
 
+  // Log that call-ended fired (for reliability tracking)
+  const logEntry = await logCallEnded(callSid, callStatus, statusCallbackTo, statusCallbackFrom);
+  if (logEntry) {
+    console.log(`📝 [CALL-ENDED] Logged event: id=${logEntry.id}`);
+  }
+
+  // Update log status to processing
+  if (logEntry) {
+    await updateCallEndedLog(callSid, { status: 'processing' }).catch(logErr => console.error('Failed to update log to processing:', logErr));
+  }
+
   console.log(`⏰ [CALL-ENDED] Running processCallCompletion (lead + email/SMS)...`);
-  processCallCompletion(callSid, { statusCallbackTo, statusCallbackFrom }).catch(err => {
+  processCallCompletion(callSid, { statusCallbackTo, statusCallbackFrom, logEntryId: logEntry?.id }).catch(err => {
     console.error(`❌ [CALL-ENDED] processCallCompletion failed:`, err.message);
     console.error(`   Stack:`, err.stack);
+    // Update log with error
+    if (logEntry) {
+      updateCallEndedLog(callSid, {
+        status: 'error',
+        error_message: err.message,
+        error_stack: err.stack
+      }).catch(logErr => console.error('Failed to update log with error:', logErr));
+    }
   });
 
   res.sendStatus(200);
 });
 
 // Process call completion: Fetch transcript, generate summary, save lead, send notification
-// statusCallback: optional { statusCallbackTo, statusCallbackFrom } from Twilio so we always have the business line for lead ownership
+// statusCallback: optional { statusCallbackTo, statusCallbackFrom, logEntryId } from Twilio so we always have the business line for lead ownership
 async function processCallCompletion(callSid, statusCallback = {}) {
   try {
     console.log(`📋 [CALL-COMPLETE] Starting: lead + email/SMS for callSid=${callSid}`);
@@ -1159,10 +1368,22 @@ async function processCallCompletion(callSid, statusCallback = {}) {
     const session = await getSession(callSid);
     if (!session) {
       console.error(`❌ [CALL-COMPLETE] Skipped: no session for ${callSid} — cannot save lead or send email`);
+      if (statusCallback.logEntryId) {
+        await updateCallEndedLog(callSid, {
+          status: 'error',
+          error_message: 'No session found - cannot save lead or send email'
+        }).catch(logErr => console.error('Failed to update log:', logErr));
+      }
       return;
     }
     if (!session.transcript_buffer || session.transcript_buffer.length === 0) {
       console.error(`❌ [CALL-COMPLETE] Skipped: empty transcript for ${callSid}`);
+      if (statusCallback.logEntryId) {
+        await updateCallEndedLog(callSid, {
+          status: 'error',
+          error_message: 'Empty transcript - cannot save lead or send email'
+        }).catch(logErr => console.error('Failed to update log:', logErr));
+      }
       return;
     }
 
@@ -1205,6 +1426,8 @@ async function processCallCompletion(callSid, statusCallback = {}) {
       return;
     }
     const businessLineForLead = twilioToNumber;
+    const isDemo = metadata.isDemoMode === true;
+    if (isDemo) console.log(`📋 [CALL-COMPLETE] Demo lead: saving with is_demo=true, sample email → BUSINESS_OWNER_EMAIL (developer)`);
     console.log(`📋 [CALL-COMPLETE] Saving lead... (caller/callback: ${fromNumber}, business line for ownership: ${businessLineForLead})`);
     const leadPayload = {
       phone: summary.phoneNumber || fromNumber,
@@ -1213,7 +1436,8 @@ async function processCallCompletion(callSid, statusCallback = {}) {
       status: 'new',
       industry: process.env.BUSINESS_TYPE || process.env.BUSINESS_NAME || 'Residential Services',
       callSid: callSid,
-      fromNumber: businessLineForLead
+      fromNumber: businessLineForLead,
+      ...(isDemo && { isDemo: true })
     };
     console.log(`📋 [CALL-COMPLETE] saveLead payload:`, JSON.stringify({ ...leadPayload, transcript: '(omitted)' }, null, 2));
     const lead = await saveLead(leadPayload);
@@ -1243,8 +1467,18 @@ async function processCallCompletion(callSid, statusCallback = {}) {
       smsFromNumber: botConfig?.twilio_phone_number || twilioToNumber || null
     };
     console.log(`📋 [CALL-COMPLETE] Sending notifications. SMS options:`, smsOptions);
-    await logNotificationWithSMS(lead.id, messageBody, callSid, summary, smsOptions);
+    const notificationResult = await logNotificationWithSMS(lead.id, messageBody, callSid, summary, smsOptions);
     console.log(`📋 [CALL-COMPLETE] Done. Lead id=${lead.id}, from_number=${businessLineForLead}`);
+
+    // Update log with success
+    if (statusCallback.logEntryId) {
+      await updateCallEndedLog(callSid, {
+        status: 'completed',
+        lead_id: lead.id,
+        email_sent: notificationResult?.emailSent || false,
+        sms_sent: notificationResult?.sent || false
+      }).catch(logErr => console.error('Failed to update log with success:', logErr));
+    }
 
     // Delete session (cleanup)
     await deleteSession(callSid);
@@ -1253,6 +1487,16 @@ async function processCallCompletion(callSid, statusCallback = {}) {
   } catch (error) {
     console.error(`❌ Error processing call completion:`, error.message);
     console.error(`   Stack:`, error.stack);
+    
+    // Update log with error
+    if (statusCallback.logEntryId) {
+      await updateCallEndedLog(callSid, {
+        status: 'error',
+        error_message: error.message,
+        error_stack: error.stack
+      }).catch(logErr => console.error('Failed to update log with error:', logErr));
+    }
+    
     // Don't throw - this is async processing
   }
 }
@@ -1269,6 +1513,127 @@ app.post('/sms-status', async (req, res) => {
   }
   
   res.sendStatus(200);
+});
+
+// In-browser demo: mic → STT (frontend) → this endpoint (LLM + ElevenLabs) → return base64 audio
+app.get('/demo-voice', (req, res) => {
+  console.log(`🎤 [DEMO-VOICE] GET (health check)`);
+  res.json({ ok: true, endpoint: 'demo-voice', message: 'POST with { message?, history? } to talk to the AI receptionist.' });
+});
+
+app.post('/demo-voice', async (req, res) => {
+  console.log(`\n${'='.repeat(50)}`);
+  console.log(`🎤 [DEMO-VOICE] Incoming request at ${new Date().toISOString()}`);
+  console.log(`🎤 [DEMO-VOICE] req.body type=${typeof req.body}, keys=${req.body ? Object.keys(req.body).join(',') : 'none'}`);
+  console.log(`🎤 [DEMO-VOICE] Body:`, JSON.stringify(req.body, null, 2));
+  try {
+    const { message = '', history = [] } = req.body || {};
+    const trimmedMessage = typeof message === 'string' ? message.trim() : '';
+    const safeHistory = Array.isArray(history) ? history : [];
+    console.log(`🎤 [DEMO-VOICE] Parsed: message="${trimmedMessage.substring(0, 80)}${trimmedMessage.length > 80 ? '...' : ''}", history.length=${safeHistory.length}`);
+
+    let textToSpeak;
+    let messagesForAi;
+
+    if (safeHistory.length === 0 && !trimmedMessage) {
+      // First turn: return greeting (no LLM call)
+      textToSpeak = "You've reached Reception Demo. Thank you for calling. How can I help you today?";
+      console.log(`🎤 [DEMO-VOICE] First turn → returning greeting (no LLM)`);
+    } else {
+      messagesForAi = [...safeHistory];
+      if (trimmedMessage) {
+        messagesForAi.push({ role: 'user', content: trimmedMessage });
+      }
+      console.log(`🎤 [DEMO-VOICE] Conversation turn: ${messagesForAi.length} messages for LLM`);
+      const fakeCallSid = `browser-demo-${Date.now()}`;
+      console.log(`🎤 [DEMO-VOICE] Calling getAIResponse(..., { isBrowserDemo: true })`);
+      const aiResult = await getAIResponse(messagesForAi, fakeCallSid, null, { isBrowserDemo: true });
+      textToSpeak = aiResult.response || "I didn't catch that. Could you repeat?";
+      console.log(`🎤 [DEMO-VOICE] AI response (${textToSpeak.length} chars): "${textToSpeak.substring(0, 100)}${textToSpeak.length > 100 ? '...' : ''}"`);
+    }
+
+    console.log(`🎤 [DEMO-VOICE] Calling ElevenLabs (base64) for text length=${textToSpeak.length}`);
+    const audioBase64 = await generateElevenLabsAudioBase64(textToSpeak);
+    console.log(`🎤 [DEMO-VOICE] ElevenLabs OK, base64 length=${audioBase64?.length ?? 0}`);
+    console.log(`🎤 [DEMO-VOICE] Returning 200 with text + audioBase64`);
+    console.log(`${'='.repeat(50)}\n`);
+    res.json({ text: textToSpeak, audioBase64 });
+  } catch (err) {
+    console.error(`❌ [DEMO-VOICE] Error:`, err.message);
+    console.error(`❌ [DEMO-VOICE] Stack:`, err.stack);
+    console.log(`${'='.repeat(50)}\n`);
+    res.status(500).json({ error: err.message || 'Failed to generate response' });
+  }
+});
+
+// Demo mode: outbound call from "demo line" to prospect (no third number needed)
+function normalizeE164(input) {
+  if (!input || typeof input !== 'string') return null;
+  const digits = input.replace(/\D/g, '');
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  if (input.startsWith('+')) return input;
+  return digits.length >= 10 ? `+${digits}` : null;
+}
+
+app.post('/trigger-demo', async (req, res) => {
+  console.log(`\n${'='.repeat(50)}`);
+  console.log(`📞 [TRIGGER-DEMO] Incoming request`);
+  console.log(`   Time: ${new Date().toISOString()}`);
+  console.log(`   Body:`, JSON.stringify(req.body, null, 2));
+
+  const rawInput = req.body?.customerNumber || req.body?.phone || '';
+  const customerNumber = normalizeE164(rawInput);
+  const demoLine = process.env.DEMO_LINE || process.env.TWILIO_PHONE_NUMBER;
+  const publicUrl = process.env.PUBLIC_URL || `http://localhost:${process.env.PHONE_SERVER_PORT || 3001}`;
+
+  console.log(`   [TRIGGER-DEMO] Raw input: "${rawInput}" → normalized: ${customerNumber || 'null'}`);
+  console.log(`   [TRIGGER-DEMO] DEMO_LINE env: ${process.env.DEMO_LINE || '(not set)'}`);
+  console.log(`   [TRIGGER-DEMO] Using from (demo line): ${demoLine}`);
+  console.log(`   [TRIGGER-DEMO] PUBLIC_URL: ${publicUrl}`);
+
+  if (!customerNumber) {
+    console.log(`   [TRIGGER-DEMO] Rejecting: invalid or missing customerNumber`);
+    return res.status(400).json({ error: 'Invalid or missing customerNumber. Use E.164 (e.g. +15551234567).' });
+  }
+  if (!demoLine) {
+    console.error(`   [TRIGGER-DEMO] Rejecting: DEMO_LINE and TWILIO_PHONE_NUMBER not set`);
+    return res.status(500).json({ error: 'DEMO_LINE or TWILIO_PHONE_NUMBER not set in .env' });
+  }
+  if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
+    console.error(`   [TRIGGER-DEMO] Rejecting: Twilio credentials missing`);
+    return res.status(500).json({ error: 'Twilio not configured' });
+  }
+
+  const voiceUrl = `${publicUrl.replace(/\/$/, '')}/voice`;
+  const statusCallbackUrl = `${publicUrl.replace(/\/$/, '')}/call-ended`;
+  console.log(`   [TRIGGER-DEMO] Voice URL: ${voiceUrl}`);
+  console.log(`   [TRIGGER-DEMO] Status callback: ${statusCallbackUrl}`);
+  console.log(`   [TRIGGER-DEMO] Calling Twilio calls.create({ to: ${customerNumber}, from: ${demoLine}, url: ${voiceUrl} })`);
+
+  try {
+    const call = await twilioClient.calls.create({
+      to: customerNumber,
+      from: demoLine,
+      url: voiceUrl,
+      method: 'POST',
+      statusCallback: statusCallbackUrl,
+      statusCallbackEvent: ['completed'],
+    });
+    console.log(`✅ [TRIGGER-DEMO] Twilio call created successfully`);
+    console.log(`   [TRIGGER-DEMO] Call SID: ${call.sid}`);
+    console.log(`   [TRIGGER-DEMO] Call status: ${call.status}`);
+    console.log(`${'='.repeat(50)}\n`);
+    return res.json({ sid: call.sid, message: 'Call initiated. They should ring shortly.' });
+  } catch (err) {
+    console.error(`❌ [TRIGGER-DEMO] Twilio API error`);
+    console.error(`   [TRIGGER-DEMO] Message: ${err.message}`);
+    console.error(`   [TRIGGER-DEMO] Code: ${err.code ?? 'n/a'}`);
+    console.error(`   [TRIGGER-DEMO] More: ${err.moreInfo ?? 'n/a'}`);
+    if (err.stack) console.error(`   [TRIGGER-DEMO] Stack:`, err.stack);
+    console.log(`${'='.repeat(50)}\n`);
+    return res.status(500).json({ error: err.message || 'Failed to create call' });
+  }
 });
 
 // Health check endpoint

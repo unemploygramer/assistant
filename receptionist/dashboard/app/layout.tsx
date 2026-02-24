@@ -7,8 +7,8 @@ import { Nav } from '@/components/Nav'
 const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'AI Receptionist',
-  description: 'AI phone receptionist — never miss a lead.',
+  title: 'Reception — AI Phone Receptionist | Never Miss a Lead',
+  description: 'Your AI receptionist answers every call, captures every lead, and books appointments. 24/7. Never miss a deal again.',
 }
 
 export default function RootLayout({

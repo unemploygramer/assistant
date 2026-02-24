@@ -10,6 +10,20 @@ const TONE_PROMPTS = {
   direct: 'You are a straightforward phone receptionist. Be clear, concise, and get to the point quickly. Avoid unnecessary pleasantries and focus on efficiency.'
 };
 
+const BUSINESS_TYPE_PRESETS = {
+  general: ['Name', 'Phone', 'Service Type', 'Urgency'],
+  hvac: ['Name', 'Phone', 'Service Type', 'Urgency', 'Address', 'Preferred Callback'],
+  plumbing: ['Name', 'Phone', 'Service Type', 'Urgency', 'Address', 'Preferred Callback'],
+  strip_club: ['Name', 'Phone', 'Preferred Callback', 'Service Type'],
+  restaurant: ['Name', 'Phone', 'Service Type', 'Preferred Callback'],
+  salon: ['Name', 'Phone', 'Service Type', 'Preferred Callback'],
+  legal: ['Name', 'Phone', 'Email', 'Service Type', 'Urgency', 'Preferred Callback'],
+  medical: ['Name', 'Phone', 'Service Type', 'Urgency', 'Preferred Callback'],
+  real_estate: ['Name', 'Phone', 'Email', 'Service Type', 'Address', 'Budget', 'Preferred Callback'],
+  auto: ['Name', 'Phone', 'Service Type', 'Address', 'Preferred Callback'],
+  custom: [],
+};
+
 const REQUIRED_INFO_PROMPTS = {
   'Name': 'Their full name',
   'Email': 'Their email address',
@@ -26,7 +40,10 @@ function buildSystemPrompt(config, includeExamples = false) {
   const businessName = config.businessName || 'Your Business';
   const tone = config.tone || 'professional';
   const customKnowledge = (config.customKnowledge || '').trim();
-  const requiredLeadInfo = config.requiredLeadInfo || [];
+  let requiredLeadInfo = config.requiredLeadInfo || [];
+  if (!requiredLeadInfo.length && config.businessType && BUSINESS_TYPE_PRESETS[config.businessType]) {
+    requiredLeadInfo = BUSINESS_TYPE_PRESETS[config.businessType] || [];
+  }
 
   const tonePrompt = TONE_PROMPTS[tone] || TONE_PROMPTS.professional;
 
@@ -39,6 +56,8 @@ function buildSystemPrompt(config, includeExamples = false) {
     : '';
 
   let prompt = `You are a phone receptionist for ${businessName}. ${tonePrompt}
+
+CRITICAL: The caller has already heard "You've reached ${businessName}" - you can assume they know where they called. In your first response, you may briefly acknowledge (e.g. "Thanks for calling!") but focus on helping them.
 
 CRITICAL RULES:
 - Ask ONE question at a time, wait for their response, then ask the next
@@ -61,6 +80,21 @@ PHONE NUMBER RULES:
 
 COLLECT THIS INFORMATION (one at a time):
 ${requiredInfoList}`;
+
+  const appointmentDetails = config.appointmentDetails;
+  if (appointmentDetails && (appointmentDetails.serviceTypes?.length || appointmentDetails.defaultDurationMinutes || appointmentDetails.bookingRules)) {
+    let appointmentSection = '\n\nAPPOINTMENT BOOKING:';
+    if (appointmentDetails.serviceTypes?.length) {
+      appointmentSection += `\n- Service types available: ${appointmentDetails.serviceTypes.join(', ')}`;
+    }
+    if (appointmentDetails.defaultDurationMinutes) {
+      appointmentSection += `\n- Default duration: ${appointmentDetails.defaultDurationMinutes} minutes`;
+    }
+    if (appointmentDetails.bookingRules?.trim()) {
+      appointmentSection += `\n- Booking rules: ${appointmentDetails.bookingRules.trim()}`;
+    }
+    prompt += appointmentSection;
+  }
 
   if (customKnowledgeSection) {
     prompt += customKnowledgeSection;

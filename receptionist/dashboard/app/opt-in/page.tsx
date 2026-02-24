@@ -70,7 +70,7 @@ export default function OptInPage() {
           <h1 className="text-3xl font-bold text-foreground">SMS Updates Signup</h1>
         </div>
         <p className="text-muted-foreground mb-8">
-          Enter your phone number to receive SMS updates about appointments, lead notifications, and service updates.
+          Get an instant text for every new lead. Enter your number below—we only text when something matters.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-5 rounded-xl border border-white/10 glass p-6 shadow-sm sm:p-8">

@@ -23,15 +23,16 @@ export async function GET() {
 
     const { data, error } = await supabase
       .from('bookings')
-      .select('id, customer_name, customer_phone, start_time, service_type, status, lead_id')
+      .select('id, customer_name, customer_phone, start_time, end_time, service_type, status, lead_id')
       .eq('business_id', profile.id)
       .order('start_time', { ascending: true })
 
     if (error) {
-      // Table may not exist yet — return empty
+      // Table may not exist yet (run migrations/bookings_table.sql) — return empty
       if (error.code === '42P01' || error.message?.includes('does not exist')) {
         return NextResponse.json({ bookings: [] })
       }
+      console.error('[API bookings]', error.message)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 

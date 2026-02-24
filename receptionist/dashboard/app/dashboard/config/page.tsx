@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { Save, Loader2, Eye, Building2, Phone, CheckCircle2, XCircle, AlertCircle, RefreshCw, Smartphone, CreditCard, Calendar, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { buildSystemPrompt, type BotConfig, type AppointmentDetails, BUSINESS_TYPE_PRESETS } from '@/lib/prompt-builder'
 
@@ -52,6 +53,8 @@ export default function ConfigPage() {
   const [twilioPhoneNumber, setTwilioPhoneNumber] = useState('')
   const [ownerPhone, setOwnerPhone] = useState('')
   const [calendarId, setCalendarId] = useState('')
+  const [useGoogleCalendar, setUseGoogleCalendar] = useState(true)
+  const [serviceAccountEmail, setServiceAccountEmail] = useState('')
   const [savedAt, setSavedAt] = useState<string | null>(null)
   const [lastCall, setLastCall] = useState<any>(null)
   const [lastCallLoading, setLastCallLoading] = useState(false)
@@ -60,6 +63,7 @@ export default function ConfigPage() {
   const [checkoutLoading, setCheckoutLoading] = useState(false)
   const [calendarSetup, setCalendarSetup] = useState<{ serviceAccountEmail: string | null; getCalendarIdUrl: string; shareCalendarUrl: string } | null>(null)
   const [calendarSetupExpanded, setCalendarSetupExpanded] = useState(false)
+  const [sectionOpen, setSectionOpen] = useState({ business: true, personality: true, leadCapture: true })
 
   // Load existing config once on mount (empty deps — do not add loadConfig to avoid re-run loops)
   useEffect(() => {
@@ -96,11 +100,15 @@ export default function ConfigPage() {
         const twilio = data.twilio_phone_number ?? ''
         const owner = data.owner_phone ?? ''
         const calendar = data.calendar_id ?? ''
+        const useGoogle = data.use_google_calendar !== false
+        const svcEmail = data.service_account_email ?? ''
         const saved = data.saved_at ?? null
-        console.log('[CONFIG] setting form fields', { twilio_phone_number: twilio, owner_phone: owner, calendar_id: calendar, saved_at: saved })
+        console.log('[CONFIG] setting form fields', { twilio_phone_number: twilio, owner_phone: owner, calendar_id: calendar, use_google_calendar: useGoogle, service_account_email: svcEmail, saved_at: saved })
         setTwilioPhoneNumber(twilio)
         setOwnerPhone(owner)
         setCalendarId(calendar)
+        setUseGoogleCalendar(useGoogle)
+        setServiceAccountEmail(svcEmail)
         setSavedAt(saved)
         setSubscriptionStatus(data.subscription_status ?? null)
       })
@@ -150,6 +158,8 @@ export default function ConfigPage() {
           twilio_phone_number: twilioPhoneNumber.trim() || null,
           owner_phone: ownerPhone.trim() || null,
           calendar_id: calendarId.trim() || null,
+          use_google_calendar: useGoogleCalendar,
+          service_account_email: serviceAccountEmail.trim() || null,
         })
       })
 
@@ -254,13 +264,13 @@ export default function ConfigPage() {
           <div className="flex items-center gap-3 mb-2">
             <Building2 className="w-8 h-8 text-primary" />
             <h1 className="text-3xl font-bold text-foreground">
-              {hasExistingSetup ? 'Edit configuration' : 'Bot configuration'}
+              {hasExistingSetup ? 'Edit configuration' : 'Receptionist setup'}
             </h1>
           </div>
           <p className="text-muted-foreground">
             {hasExistingSetup
-              ? 'Update your AI receptionist and business details below. Changes are saved to your account.'
-              : 'Set up your AI receptionist: business name, tone, and what to collect from callers.'}
+              ? 'Update your receptionist and business details below. Changes are saved to your account.'
+              : 'Set up your AI receptionist in minutes: business name, voice tone, and what to collect from every caller.'}
           </p>
         </div>
 
@@ -308,6 +318,21 @@ export default function ConfigPage() {
           </div>
         )}
 
+        {/* Save at top — visible without scrolling */}
+        <div className="mb-6 flex justify-end">
+          <button
+            onClick={saveConfig}
+            disabled={saving || !config.businessName.trim()}
+            className={cn(
+              'inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium transition shadow-sm',
+              'bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed'
+            )}
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            {saving ? 'Saving...' : 'Save changes'}
+          </button>
+        </div>
+
         {/* Pricing / Upgrade */}
         <div className="mb-6 p-4 glass rounded-lg">
           <h2 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
@@ -315,7 +340,7 @@ export default function ConfigPage() {
             Subscription
           </h2>
           {subscriptionStatus === 'active' ? (
-            <p className="text-sm text-green-700 font-medium flex items-center gap-2">
+            <p className="text-sm text-secondary font-medium flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4" />
               Active — you’re on the Pro plan.
             </p>
@@ -389,7 +414,7 @@ export default function ConfigPage() {
                   {lastCall.email_sent && <div className="text-secondary">✓ Email sent</div>}
                   {lastCall.sms_sent && <div className="text-secondary">✓ SMS sent</div>}
                   {lastCall.error_message && (
-                    <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-red-800 text-xs">
+                    <div className="mt-2 p-2 bg-destructive/10 border border-destructive/30 rounded text-destructive text-xs">
                       <div className="font-medium">Error:</div>
                       <div>{lastCall.error_message}</div>
                     </div>
@@ -403,13 +428,20 @@ export default function ConfigPage() {
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Left: Configuration Form */}
-          <div className="space-y-6">
-            <div className="glass rounded-lg p-6">
-              <h2 className="text-xl font-semibold text-foreground mb-6">
-                {hasExistingSetup ? 'Edit bot settings' : 'Bot settings'}
-              </h2>
-
+          {/* Left: Configuration Form — collapsible sections */}
+          <div className="space-y-4">
+            {/* Section: Business Info */}
+            <div className="glass rounded-lg overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setSectionOpen((s) => ({ ...s, business: !s.business }))}
+                className="w-full flex items-center justify-between px-6 py-4 text-left"
+              >
+                <span className="font-semibold text-foreground">Business Info</span>
+                {sectionOpen.business ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </button>
+              {sectionOpen.business && (
+                <div className="px-6 pb-6 space-y-6 border-t border-white/10 pt-4">
               {/* Business Name */}
               <div className="mb-6">
                 <label htmlFor="businessName" className="block text-sm font-medium text-foreground mb-2">
@@ -421,7 +453,7 @@ export default function ConfigPage() {
                   value={config.businessName}
                   onChange={(e) => setConfig(prev => ({ ...prev, businessName: e.target.value }))}
                   placeholder="e.g., Acme Plumbing"
-                  className="w-full px-4 py-2 border border-white/10 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition"
+                  className="input-field focus:ring-2 focus:ring-primary focus:border-primary"
                 />
               </div>
 
@@ -431,7 +463,7 @@ export default function ConfigPage() {
                   Business phone number (system-managed)
                 </label>
                 {twilioPhoneNumber ? (
-                  <div className="flex items-center gap-3 p-3 bg-white/5 border border-white/10 rounded-lg">
+                  <div className="flex items-center gap-3 p-3 bg-muted border border-white/20 rounded-lg text-foreground">
                     <Smartphone className="w-5 h-5 text-muted-foreground" />
                     <span className="font-mono text-foreground">{twilioPhoneNumber}</span>
                     <span className="text-xs text-muted-foreground">Callers dial this number</span>
@@ -468,13 +500,23 @@ export default function ConfigPage() {
                   value={ownerPhone}
                   onChange={(e) => setOwnerPhone(e.target.value)}
                   placeholder="e.g., +17145551234"
-                  className="w-full px-4 py-2 border border-white/10 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition"
+                  className="input-field focus:ring-2 focus:ring-primary focus:border-primary"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">We text this number when a new lead comes in (same time as email). E.164 format.</p>
               </div>
 
-              {/* Google Calendar ID */}
+              {/* Google Calendar ID + switch */}
               <div className="mb-6">
+                <label className="flex items-center gap-3 p-3 border border-white/10 rounded-lg hover:bg-white/5 cursor-pointer transition mb-3">
+                  <input
+                    type="checkbox"
+                    checked={useGoogleCalendar}
+                    onChange={(e) => setUseGoogleCalendar(e.target.checked)}
+                    className="w-4 h-4 text-primary border-white/10 rounded focus:ring-primary"
+                  />
+                  <span className="text-sm font-medium text-foreground">Sync to Google Calendar</span>
+                </label>
+                <p className="text-xs text-muted-foreground mb-3">Turn off if you get JWT or permission errors; appointments still save to the dashboard.</p>
                 <label htmlFor="calendarId" className="block text-sm font-medium text-foreground mb-2">
                   Google Calendar ID
                 </label>
@@ -484,9 +526,24 @@ export default function ConfigPage() {
                   value={calendarId}
                   onChange={(e) => setCalendarId(e.target.value)}
                   placeholder="e.g., you@company.com or primary"
-                  className="w-full px-4 py-2 border border-white/10 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition"
+                  className="input-field focus:ring-2 focus:ring-primary focus:border-primary"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">Calendar shared with your service account for booking.</p>
+
+                <div className="mt-3">
+                  <label htmlFor="serviceAccountEmail" className="block text-sm font-medium text-foreground mb-2">
+                    Google service account email
+                  </label>
+                  <input
+                    id="serviceAccountEmail"
+                    type="text"
+                    value={serviceAccountEmail}
+                    onChange={(e) => setServiceAccountEmail(e.target.value)}
+                    placeholder="e.g. receptionist-bot@project-xxx.iam.gserviceaccount.com"
+                    className="input-field focus:ring-2 focus:ring-primary focus:border-primary"
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">Paste the service account from your creds.json (client_email). Share your calendar with this address.</p>
+                </div>
 
                 {/* How to link your calendar */}
                 <div className="mt-4 rounded-lg border border-white/10 overflow-hidden">
@@ -520,21 +577,21 @@ export default function ConfigPage() {
                         </li>
                         <li>
                           <span className="text-foreground">Share your calendar</span> with this service account:
-                          {calendarSetup?.serviceAccountEmail ? (
+                          {(serviceAccountEmail || calendarSetup?.serviceAccountEmail) ? (
                             <div className="mt-2 flex items-center gap-2">
                               <code className="px-2 py-1 rounded bg-muted text-foreground text-xs break-all">
-                                {calendarSetup.serviceAccountEmail}
+                                {serviceAccountEmail || calendarSetup?.serviceAccountEmail}
                               </code>
                               <button
                                 type="button"
-                                onClick={() => navigator.clipboard.writeText(calendarSetup.serviceAccountEmail!)}
+                                onClick={() => navigator.clipboard.writeText(serviceAccountEmail || calendarSetup?.serviceAccountEmail || '')}
                                 className="text-xs text-primary hover:underline"
                               >
                                 Copy
                               </button>
                             </div>
                           ) : (
-                            <p className="mt-1 text-xs">Service account email not found. Set CALENDAR_SERVICE_ACCOUNT_EMAIL in env or deploy with creds.json.</p>
+                            <p className="mt-1 text-xs">Paste the service account email above (from creds.json) and save, or set CALENDAR_SERVICE_ACCOUNT_EMAIL in env.</p>
                           )}
                           <a
                             href={calendarSetup?.shareCalendarUrl ?? 'https://calendar.google.com/calendar/u/0/r/settings/addbyemail'}
@@ -552,9 +609,24 @@ export default function ConfigPage() {
                   )}
                 </div>
               </div>
+                </div>
+              )}
+            </div>
 
+            {/* Section: Bot Personality */}
+            <div className="glass rounded-lg overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setSectionOpen((s) => ({ ...s, personality: !s.personality }))}
+                className="w-full flex items-center justify-between px-6 py-4 text-left"
+              >
+                <span className="font-semibold text-foreground">Voice & personality</span>
+                {sectionOpen.personality ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </button>
+              {sectionOpen.personality && (
+                <div className="px-6 pb-6 space-y-6 border-t border-white/10 pt-4">
               {/* Business Type */}
-              <div className="mb-6">
+              <div className="mb-0">
                 <label htmlFor="businessType" className="block text-sm font-medium text-foreground mb-2">
                   Business Type
                 </label>
@@ -562,7 +634,7 @@ export default function ConfigPage() {
                   id="businessType"
                   value={config.businessType ?? 'general'}
                   onChange={(e) => handleBusinessTypeChange(e.target.value)}
-                  className="w-full px-4 py-2 border border-white/10 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition"
+                  className="input-field focus:ring-2 focus:ring-primary focus:border-primary"
                 >
                   {BUSINESS_TYPE_OPTIONS.map(opt => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -573,67 +645,16 @@ export default function ConfigPage() {
                 </p>
               </div>
 
-              {/* Appointment Details */}
-              <div className="mb-6 p-4 bg-white/5 rounded-lg border border-white/10">
-                <h3 className="text-sm font-semibold text-foreground mb-3">Appointment Details</h3>
-                <div className="space-y-4">
-                  <div>
-                    <label htmlFor="serviceTypes" className="block text-sm font-medium text-foreground mb-1">
-                      Service types (comma-separated)
-                    </label>
-                    <input
-                      id="serviceTypes"
-                      type="text"
-                      value={(config.appointmentDetails?.serviceTypes ?? []).join(', ')}
-                      onChange={(e) => setAppointmentDetails({
-                        serviceTypes: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
-                      })}
-                      placeholder="e.g. General consultation, VIP table, AC repair"
-                      className="w-full px-4 py-2 border border-white/10 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="defaultDuration" className="block text-sm font-medium text-foreground mb-1">
-                      Default duration (minutes)
-                    </label>
-                    <input
-                      id="defaultDuration"
-                      type="number"
-                      min={5}
-                      max={480}
-                      value={config.appointmentDetails?.defaultDurationMinutes ?? 30}
-                      onChange={(e) => setAppointmentDetails({
-                        defaultDurationMinutes: parseInt(e.target.value, 10) || 30
-                      })}
-                      className="w-full px-4 py-2 border border-white/10 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="bookingRules" className="block text-sm font-medium text-foreground mb-1">
-                      Booking rules (optional)
-                    </label>
-                    <textarea
-                      id="bookingRules"
-                      value={config.appointmentDetails?.bookingRules ?? ''}
-                      onChange={(e) => setAppointmentDetails({ bookingRules: e.target.value })}
-                      placeholder="e.g. No same-day booking. Minimum 24h notice."
-                      rows={2}
-                      className="w-full px-4 py-2 border border-white/10 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition resize-none"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Bot Tone */}
+              {/* Voice tone */}
               <div className="mb-6">
                 <label htmlFor="tone" className="block text-sm font-medium text-foreground mb-2">
-                  Bot Tone
+                  Voice tone
                 </label>
                 <select
                   id="tone"
                   value={config.tone}
                   onChange={(e) => setConfig(prev => ({ ...prev, tone: e.target.value as BotConfig['tone'] }))}
-                  className="w-full px-4 py-2 border border-white/10 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition"
+                  className="input-field focus:ring-2 focus:ring-primary focus:border-primary"
                 >
                   {TONE_OPTIONS.map(option => (
                     <option key={option.value} value={option.value}>
@@ -652,13 +673,79 @@ export default function ConfigPage() {
                   id="customKnowledge"
                   value={config.customKnowledge}
                   onChange={(e) => setConfig(prev => ({ ...prev, customKnowledge: e.target.value }))}
-                  placeholder="Add specific FAQs, business rules, or knowledge the bot should know..."
+                  placeholder="Add FAQs, business rules, or knowledge your receptionist should use on every call..."
                   rows={6}
-                  className="w-full px-4 py-2 border border-white/10 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition resize-none"
+                  className="input-field focus:ring-2 focus:ring-primary focus:border-primary resize-none"
                 />
                 <p className="mt-2 text-xs text-muted-foreground">
                   This will be injected into the system prompt. Use this for business-specific information.
                 </p>
+              </div>
+                </div>
+              )}
+            </div>
+
+            {/* Section: Lead Capture Rules */}
+            <div className="glass rounded-lg overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setSectionOpen((s) => ({ ...s, leadCapture: !s.leadCapture }))}
+                className="w-full flex items-center justify-between px-6 py-4 text-left"
+              >
+                <span className="font-semibold text-foreground">Lead Capture Rules</span>
+                {sectionOpen.leadCapture ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </button>
+              {sectionOpen.leadCapture && (
+                <div className="px-6 pb-6 space-y-6 border-t border-white/10 pt-4">
+              {/* Appointment Details */}
+              <div className="mb-6 p-4 bg-white/5 rounded-lg border border-white/10">
+                <h3 className="text-sm font-semibold text-foreground mb-3">Appointment Details</h3>
+                <div className="space-y-4">
+                  <div>
+                    <label htmlFor="serviceTypes" className="block text-sm font-medium text-foreground mb-1">
+                      Service types (comma-separated)
+                    </label>
+                    <input
+                      id="serviceTypes"
+                      type="text"
+                      value={(config.appointmentDetails?.serviceTypes ?? []).join(', ')}
+                      onChange={(e) => setAppointmentDetails({
+                        serviceTypes: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+                      })}
+                      placeholder="e.g. General consultation, VIP table, AC repair"
+                      className="input-field focus:ring-2 focus:ring-primary focus:border-primary"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="defaultDuration" className="block text-sm font-medium text-foreground mb-1">
+                      Default duration (minutes)
+                    </label>
+                    <input
+                      id="defaultDuration"
+                      type="number"
+                      min={5}
+                      max={480}
+                      value={config.appointmentDetails?.defaultDurationMinutes ?? 30}
+                      onChange={(e) => setAppointmentDetails({
+                        defaultDurationMinutes: parseInt(e.target.value, 10) || 30
+                      })}
+                      className="input-field focus:ring-2 focus:ring-primary focus:border-primary"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="bookingRules" className="block text-sm font-medium text-foreground mb-1">
+                      Booking rules (optional)
+                    </label>
+                    <textarea
+                      id="bookingRules"
+                      value={config.appointmentDetails?.bookingRules ?? ''}
+                      onChange={(e) => setAppointmentDetails({ bookingRules: e.target.value })}
+                      placeholder="e.g. No same-day booking. Minimum 24h notice."
+                      rows={2}
+                      className="input-field focus:ring-2 focus:ring-primary focus:border-primary resize-none"
+                    />
+                  </div>
+                </div>
               </div>
 
               {/* Required Lead Info */}
@@ -680,25 +767,8 @@ export default function ConfigPage() {
                   ))}
                 </div>
               </div>
-
-              {/* Save Button */}
-              <button
-                onClick={saveConfig}
-                disabled={saving || !config.businessName.trim()}
-                className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-primary text-primary-foreground rounded-lg font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-sm"
-              >
-                {saving ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Saving...
-                  </>
-                ) : (
-                  <>
-                    <Save className="w-5 h-5" />
-                    {hasExistingSetup ? 'Save changes' : 'Save configuration'}
-                  </>
-                )}
-              </button>
+                </div>
+              )}
             </div>
           </div>
 
@@ -711,7 +781,7 @@ export default function ConfigPage() {
               </div>
               <div className="bg-background rounded-lg p-4 border border-white/10">
                 <pre className="text-xs text-foreground font-mono whitespace-pre-wrap overflow-auto max-h-[600px]">
-                  {promptPreview || 'Start configuring your bot to see the preview...'}
+                  {promptPreview || 'Configure your receptionist above to see the live prompt preview...'}
                 </pre>
               </div>
               <p className="mt-4 text-xs text-muted-foreground">
@@ -720,6 +790,24 @@ export default function ConfigPage() {
             </div>
           </div>
         </div>
+
+        {/* Sticky Save at bottom */}
+        <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-white/10 bg-background/95 backdrop-blur py-3 px-4 lg:pl-[14rem]">
+          <div className="max-w-7xl mx-auto flex justify-end">
+            <button
+              onClick={saveConfig}
+              disabled={saving || !config.businessName.trim()}
+              className={cn(
+                'inline-flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium transition shadow-sm',
+                'bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed'
+              )}
+            >
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              {saving ? 'Saving...' : (hasExistingSetup ? 'Save changes' : 'Save configuration')}
+            </button>
+          </div>
+        </div>
+        <div className="h-16" />
       </div>
     </div>
   )

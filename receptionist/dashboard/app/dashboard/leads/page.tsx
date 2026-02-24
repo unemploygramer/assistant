@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import Link from 'next/link'
 import { Loader2, MessageSquare, Phone } from 'lucide-react'
 import { toast } from 'sonner'
 import {
@@ -182,6 +183,20 @@ export default function LeadsPage() {
             <p className="mx-auto mt-2 max-w-sm text-muted-foreground">
               Leads from phone calls will show here once calls start coming in.
             </p>
+            <div className="mt-6 flex flex-col sm:flex-row gap-3 justify-center">
+              <Link
+                href="/dashboard/config"
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition"
+              >
+                Set up your first lead flow
+              </Link>
+              <Link
+                href="/demo"
+                className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/10 px-5 py-2.5 text-sm font-medium text-foreground hover:bg-white/5 transition"
+              >
+                Send a test call to yourself
+              </Link>
+            </div>
             <div className="mx-auto mt-6 max-w-md rounded-lg border border-primary/30 glass p-4 text-left text-sm text-foreground">
               <p className="font-medium">How leads are linked to you</p>
               <p className="mt-1 text-muted-foreground">

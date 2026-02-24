@@ -39,9 +39,13 @@ export async function GET() {
         requiredLeadInfo: (botConfig?.requiredLeadInfo as string[]) || [],
         businessType: (botConfig?.businessType as string) || 'general',
         appointmentDetails: (botConfig?.appointmentDetails as { serviceTypes?: string[]; defaultDurationMinutes?: number; bookingRules?: string }) || { serviceTypes: [], defaultDurationMinutes: 30, bookingRules: '' },
+        use_google_calendar: (botConfig?.use_google_calendar as boolean) !== false,
+        service_account_email: (botConfig?.service_account_email as string) ?? null,
       },
       twilio_phone_number: data.twilio_phone_number ?? null,
       calendar_id: data.calendar_id ?? (botConfig?.google_calendar_id as string) ?? null,
+      use_google_calendar: (botConfig?.use_google_calendar as boolean) !== false,
+      service_account_email: (botConfig?.service_account_email as string) ?? null,
       owner_phone: data.owner_phone ?? null,
       saved_at: data.updated_at ?? null,
       subscription_status: data.subscription_status ?? null,
@@ -63,13 +67,15 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { businessName, tone, customKnowledge, requiredLeadInfo, twilio_phone_number, calendar_id, owner_phone, businessType, appointmentDetails } = body
+    const { businessName, tone, customKnowledge, requiredLeadInfo, twilio_phone_number, calendar_id, owner_phone, businessType, appointmentDetails, use_google_calendar, service_account_email } = body
 
     const botConfig = {
       tone: tone || 'professional',
       customKnowledge: customKnowledge || '',
       requiredLeadInfo: requiredLeadInfo || [],
       ...(calendar_id != null && { google_calendar_id: calendar_id }),
+      ...(typeof use_google_calendar === 'boolean' && { use_google_calendar }),
+      ...(service_account_email != null && { service_account_email: typeof service_account_email === 'string' ? service_account_email.trim() || null : null }),
       ...(businessType != null && { businessType: businessType || 'general' }),
       ...(appointmentDetails != null && { appointmentDetails: appointmentDetails || { serviceTypes: [], defaultDurationMinutes: 30, bookingRules: '' } }),
     }

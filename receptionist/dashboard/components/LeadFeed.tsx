@@ -63,7 +63,15 @@ export function LeadFeed() {
       </div>
       <div className="max-h-[400px] overflow-y-auto divide-y divide-white/5">
         {leads.length === 0 ? (
-          <div className="p-4 text-sm text-muted-foreground">No leads yet</div>
+          <div className="p-4">
+            <p className="text-sm text-muted-foreground">No leads yet. Every call you get will show up here.</p>
+            <Link
+              href="/dashboard/config"
+              className="mt-2 inline-block text-sm font-medium text-primary hover:underline"
+            >
+              Turn on your receptionist and start capturing leads →
+            </Link>
+          </div>
         ) : (
           leads.map((lead) => {
             const urgent = isHighUrgency(lead.summary)

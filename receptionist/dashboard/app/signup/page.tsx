@@ -30,7 +30,8 @@ export default function SignupPage() {
   return (
     <div className="min-h-screen bg-background flex flex-col items-center justify-center px-4">
       <div className="max-w-sm w-full glass rounded-xl p-8">
-        <h1 className="text-xl font-bold text-foreground mb-6">Sign up</h1>
+        <h1 className="text-xl font-bold text-foreground mb-2">Get your AI receptionist</h1>
+        <p className="text-sm text-muted-foreground mb-6">Start answering every call in minutes. No setup fees.</p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label htmlFor="businessName" className="block text-sm font-medium text-foreground mb-1">Business name</label>

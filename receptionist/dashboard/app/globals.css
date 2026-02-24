@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Baddie Theme - Command Center Dark Mode */
+/* Reception — Command Center Dark Mode */
 @layer base {
   :root {
     --background: #050505;
@@ -32,6 +32,31 @@
     --radius: 0.5rem;
     --pipeline-glow: #00F5FF;
   }
+
+  /* Inputs: dark background and visible placeholder */
+  input[type="text"],
+  input[type="email"],
+  input[type="number"],
+  input[type="tel"],
+  input[type="password"],
+  textarea,
+  select {
+    background-color: var(--muted);
+    color: var(--foreground);
+    border-color: rgba(255, 255, 255, 0.15);
+  }
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--muted-foreground);
+    opacity: 1;
+  }
+  input:focus,
+  textarea:focus,
+  select:focus {
+    outline: none;
+    border-color: var(--ring);
+    box-shadow: 0 0 0 2px var(--ring);
+  }
 }
 
 @layer utilities {
@@ -43,5 +68,22 @@
   }
   .glow-pipeline {
     text-shadow: 0 0 20px var(--pipeline-glow), 0 0 40px var(--pipeline-glow);
+  }
+
+  /* Form inputs: dark background, visible border, readable placeholder */
+  .input-field {
+    @apply w-full px-4 py-2 rounded-lg transition;
+    background-color: var(--muted);
+    color: var(--foreground);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }
+  .input-field::placeholder {
+    color: var(--muted-foreground);
+    opacity: 1;
+  }
+  .input-field:focus {
+    outline: none;
+    border-color: var(--ring);
+    box-shadow: 0 0 0 2px var(--ring);
   }
 }

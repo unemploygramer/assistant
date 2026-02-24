@@ -6,9 +6,9 @@ export default function AboutPage() {
   return (
     <div className="min-h-screen bg-background">
       <div className="mx-auto max-w-3xl px-4 py-12 sm:px-6 sm:py-16">
-        <h1 className="text-3xl font-bold text-foreground sm:text-4xl">About</h1>
+        <h1 className="text-3xl font-bold text-foreground sm:text-4xl">About Reception</h1>
         <p className="mt-4 text-lg text-muted-foreground">
-          AI Receptionist answers your business line 24/7, captures leads, and can check or book calendar appointments — so you never miss a call or a deal.
+          Reception is your AI receptionist: it answers every call 24/7, captures every lead, and can check or book appointments — so you never miss a call or a deal.
         </p>
 
         <div className="mt-12 grid gap-8 sm:grid-cols-1 sm:gap-10">
